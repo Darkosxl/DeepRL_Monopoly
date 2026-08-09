@@ -235,6 +235,7 @@ class MonopolyEnv:
 
             # Mortgage / unmortgage
             allowed += self._mortgage_actions(pid)
+            allowed += self._sell_property_actions(pid)
 
             # Build / sell houses
             allowed += self._improve_actions(pid)
@@ -268,6 +269,7 @@ class MonopolyEnv:
                     rescue = []
                     rescue += self._improve_actions(pid)  # sell_house / sell_hotel
                     rescue += self._mortgage_actions(pid)  # mortgage properties
+                    rescue += self._sell_property_actions(pid)
                     if rescue:
                         return rescue
                     # Genuinely insolvent — nothing left to liquidate
@@ -282,6 +284,7 @@ class MonopolyEnv:
 
                 # Can also mortgage to raise cash, or end turn
                 allowed += self._mortgage_actions(pid)
+                allowed += self._sell_property_actions(pid)
                 allowed.append(int(ActionType.END_TURN))
 
                 return allowed if allowed else [int(ActionType.END_TURN)]
@@ -371,6 +374,7 @@ class MonopolyEnv:
             if (
                 prop.owner == pid
                 and prop.is_monopoly
+                and not prop.mortgaged
                 and prop.houses < MAX_HOUSES
                 and self.houses_available > 0
                 and player.can_afford(hp)
@@ -388,6 +392,7 @@ class MonopolyEnv:
             if (
                 prop.owner == pid
                 and prop.is_monopoly
+                and not prop.mortgaged
                 and prop.houses == MAX_HOUSES
                 and self.hotels_available > 0
                 and player.can_afford(hp)
@@ -429,7 +434,7 @@ class MonopolyEnv:
         if action_idx < OFFSETS["buy_trade"]:
             local = action_idx - OFFSETS["sell_prop"]
             prop = self.properties[PROPERTY_IDS[local]]
-            if prop.owner == pid and prop.houses == 0:
+            if prop.owner == pid and not prop.mortgaged and prop.houses == 0:
                 player.cash += prop.mortgage_v
                 player.properties.remove(prop)
                 prop.owner = None
@@ -783,19 +788,46 @@ class MonopolyEnv:
         s = self.players[sender]
         r = self.players[pid]
 
-        if offer.cash_offered and s.can_afford(offer.cash_offered):
-            s.cash -= offer.cash_offered
-            r.cash += offer.cash_offered
-        if offer.cash_requested and r.can_afford(offer.cash_requested):
-            r.cash -= offer.cash_requested
-            s.cash += offer.cash_requested
+        valid = (
+            offer.from_player == sender
+            and offer.to_player == pid
+            and not s.bankrupt
+            and not r.bankrupt
+            and offer.cash_offered >= 0
+            and offer.cash_requested >= 0
+            and s.can_afford(offer.cash_offered)
+            and r.can_afford(offer.cash_requested)
+            and (
+                offer.offered_prop is None
+                or (
+                    offer.offered_prop.owner == sender
+                    and offer.offered_prop.houses == 0
+                    and offer.offered_prop in s.properties
+                )
+            )
+            and (
+                offer.requested_prop is None
+                or (
+                    offer.requested_prop.owner == pid
+                    and offer.requested_prop.houses == 0
+                    and offer.requested_prop in r.properties
+                )
+            )
+        )
+        if not valid:
+            return
 
-        if offer.offered_prop and offer.offered_prop.owner == sender:
+        s.cash -= offer.cash_offered
+        r.cash += offer.cash_offered
+        r.cash -= offer.cash_requested
+        s.cash += offer.cash_requested
+
+        if offer.offered_prop:
             offer.offered_prop.owner = pid
             s.properties.remove(offer.offered_prop)
             r.properties.append(offer.offered_prop)
 
-        if offer.requested_prop and offer.requested_prop.owner == pid:
+        if offer.requested_prop:
             offer.requested_prop.owner = sender
             r.properties.remove(offer.requested_prop)
             s.properties.append(offer.requested_prop)
@@ -884,6 +916,7 @@ class MonopolyEnv:
             hp = prop.data["house_price"]
             if (
                 prop.is_monopoly
+                and not prop.mortgaged
                 and prop.houses < MAX_HOUSES
                 and self.houses_available > 0
                 and player.can_afford(hp)
@@ -891,6 +924,7 @@ class MonopolyEnv:
                 allowed.append(OFFSETS["improve_house"] + i)
             if (
                 prop.is_monopoly
+                and not prop.mortgaged
                 and prop.houses == MAX_HOUSES
                 and self.hotels_available > 0
                 and player.can_afford(hp)
@@ -902,42 +936,70 @@ class MonopolyEnv:
                 allowed.append(OFFSETS["sell_hotel"] + i)
         return allowed
 
+    def _sell_property_actions(self, pid: int) -> List[int]:
+        return [
+            OFFSETS["sell_prop"] + i
+            for i, sq in enumerate(PROPERTY_IDS)
+            if self.properties[sq].owner == pid
+            and not self.properties[sq].mortgaged
+            and self.properties[sq].houses == 0
+        ]
+
     def _trade_offer_actions(self, pid: int) -> List[int]:
         """Only return trade actions for properties that actually exist and are owned."""
         if pid in self.pending_trades:
             return []
         allowed = []
         player = self.players[pid]
-        others = [
-            i for i in range(NUM_PLAYERS) if i != pid and not self.players[i].bankrupt
-        ]
+        all_others = [i for i in range(NUM_PLAYERS) if i != pid]
+        targets = [target for target in all_others if not self.players[target].bankrupt]
+        stride = len(PROPERTY_IDS) * len(TRADE_CASH_LEVELS)
 
-        for t_idx, target_pid in enumerate(others):
+        for target_pid in targets:
+            t_idx = all_others.index(target_pid)
             target = self.players[target_pid]
             for i, sq in enumerate(PROPERTY_IDS):
                 prop = self.properties[sq]
                 # Buy offer: target owns it, we want it
-                if (
-                    prop.owner == target_pid
-                    and prop.houses == 0
-                    and player.can_afford(int(prop.price * 0.75))
-                ):
-                    for j in range(3):
+                if prop.owner == target_pid and prop.houses == 0:
+                    for j, multiplier in enumerate(TRADE_CASH_LEVELS):
+                        if not player.can_afford(int(prop.price * multiplier)):
+                            continue
                         allowed.append(
                             OFFSETS["buy_trade"]
-                            + t_idx * len(PROPERTY_IDS) * 3
-                            + i * 3
+                            + t_idx * stride
+                            + i * len(TRADE_CASH_LEVELS)
                             + j
                         )
                 # Sell offer: we own it
                 if prop.owner == pid and prop.houses == 0:
-                    for j in range(3):
+                    for j, multiplier in enumerate(TRADE_CASH_LEVELS):
+                        if not target.can_afford(int(prop.price * multiplier)):
+                            continue
                         allowed.append(
                             OFFSETS["sell_trade"]
-                            + t_idx * len(PROPERTY_IDS) * 3
-                            + i * 3
+                            + t_idx * stride
+                            + i * len(TRADE_CASH_LEVELS)
                             + j
                         )
+
+            for offer_idx, offer_sq in enumerate(PROPERTY_IDS):
+                offered = self.properties[offer_sq]
+                if offered.owner != pid or offered.houses > 0:
+                    continue
+                for request_idx, request_sq in enumerate(PROPERTY_IDS):
+                    requested = self.properties[request_sq]
+                    if requested.owner != target_pid or requested.houses > 0:
+                        continue
+                    request_raw = (
+                        request_idx if request_idx < offer_idx else request_idx - 1
+                    )
+                    allowed.append(
+                        OFFSETS["exch_trade"]
+                        + t_idx * len(PROPERTY_IDS) * (len(PROPERTY_IDS) - 1)
+                        + offer_idx * (len(PROPERTY_IDS) - 1)
+                        + request_raw
+                    )
         return allowed
 
     def _incoming_trade(self, pid: int) -> Optional[TradeOffer]:
