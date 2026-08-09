@@ -304,6 +304,29 @@ class MonopolyRegressionTests(unittest.TestCase):
         self.assertIs(offer.offered_prop, self.env.properties[1])
         self.assertIs(offer.requested_prop, self.env.properties[3])
 
+    def test_out_of_turn_offers_only_target_future_responders(self) -> None:
+        self.give_property(1, 0)
+        self.give_property(3, 1)
+        self.give_property(5, 3)
+        self.env.phase = PHASE_OUT_OF_TURN
+        self.env.out_of_turn_pids = [2, 3]
+
+        allowed = self.env.get_allowed_actions(2)
+        all_others = [0, 1, 3]
+        expired_target = (
+            OFFSETS["buy_trade"]
+            + all_others.index(1) * len(PROPERTY_IDS) * 3
+            + PROPERTY_IDS.index(3) * 3
+        )
+        future_target = (
+            OFFSETS["buy_trade"]
+            + all_others.index(3) * len(PROPERTY_IDS) * 3
+            + PROPERTY_IDS.index(5) * 3
+        )
+
+        self.assertNotIn(expired_target, allowed)
+        self.assertIn(future_target, allowed)
+
 
 if __name__ == "__main__":
     unittest.main()
