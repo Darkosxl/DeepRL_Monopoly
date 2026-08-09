@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict
+import json
 import multiprocessing as mp
 from pathlib import Path
 import random
@@ -373,6 +374,7 @@ class Trainer:
             self.generation = resumed.generation
             self.league = resumed.league
             self.promotion_history = resumed.promotion_history
+            self._recover_release()
         else:
             self._bootstrap()
 
@@ -406,6 +408,17 @@ class Trainer:
         self.generation = resumed.generation
         self.league = resumed.league
         self.promotion_history = resumed.promotion_history
+
+    def _recover_release(self) -> None:
+        if self.league.get("status") != "champion":
+            return
+        release = Path(self.league["release"])
+        if release.exists():
+            return
+        from .ladder import freeze_release
+
+        report = json.loads((self.run_dir / self.league["gate_report"]).read_text())
+        freeze_release(self.run_dir / self.league["incumbent"], report, self.config)
 
     def _bootstrap(self) -> None:
         _seed_all(self.config.seeds.bootstrap)
@@ -543,6 +556,56 @@ class Trainer:
         self.generation = next_generation
         candidate = self.run_dir / "candidates" / f"generation_{self.generation:04d}.pt"
         self.model.save_inference(candidate, {"generation": self.generation, "status": "candidate"})
+        from .ladder import evaluate_promotion
+
+        incumbent = self.run_dir / self.league["incumbent"]
+        promotion, promoted = evaluate_promotion(
+            candidate,
+            incumbent,
+            config=self.config,
+            seed_base=(
+                self.config.seeds.promotion
+                + self.generation * self.config.training.promotion_games
+            ),
+        )
+        promotion_entry = {
+            "generation": self.generation,
+            "candidate": str(candidate.relative_to(self.run_dir)),
+            "incumbent": self.league["incumbent"],
+            "passed": promoted,
+            **promotion.as_dict(),
+        }
+        self.promotion_history.append(promotion_entry)
+        release_request = None
+        if promoted:
+            snapshot = self.run_dir / "snapshots" / f"promoted_{self.generation:04d}.pt"
+            self.model.save_inference(snapshot, {"generation": self.generation, "promoted": True})
+            relative = str(snapshot.relative_to(self.run_dir))
+            self.league["incumbent"] = relative
+            self.league["snapshots"] = (
+                self.league.get("snapshots", []) + [relative]
+            )[-self.config.training.promoted_snapshot_limit :]
+            from .ladder import BENCH_ROOT, RELEASE_TAG, freeze_release, run_gate
+
+            gate_report = run_gate(
+                snapshot,
+                config=self.config,
+                ppo_checkpoint=self.bootstrap_ppo,
+                cfr_checkpoint=self.cfr_checkpoint,
+            )
+            promotion_entry["gate"] = gate_report
+            gate_report_path = (
+                self.run_dir / "reports" / f"gate_promoted_{self.generation:04d}.json"
+            )
+            _atomic_json(gate_report_path, gate_report)
+            if gate_report["passed"]:
+                release = BENCH_ROOT / "releases" / RELEASE_TAG
+                self.league["status"] = "champion"
+                self.league["release"] = str(release)
+                self.league["gate_report"] = str(gate_report_path.relative_to(self.run_dir))
+                release_request = snapshot, gate_report
+            else:
+                self.league["status"] = "candidate"
         report = {
             "generation": self.generation,
             "games": len(games),
@@ -550,6 +613,8 @@ class Trainer:
             "replay_size": min(len(self.replay) + len(staging), self.replay.capacity),
             "batch_size": batch_size,
             "candidate": str(candidate.relative_to(self.run_dir)),
+            "promoted": promoted,
+            "promotion": promotion.as_dict(),
             **train_stats,
         }
         _atomic_json(self.run_dir / "reports" / f"generation_{self.generation:04d}.json", report)
@@ -557,12 +622,16 @@ class Trainer:
         self._checkpoint(pending)
         self.replay.append_many(staging.records())
         shutil.rmtree(staging.directory)
+        if release_request is not None:
+            freeze_release(*release_request, self.config)
         return report
 
     def run(self, generations: int) -> list[dict]:
         reports = []
         try:
             for _ in range(generations):
+                if self.league.get("status") == "champion":
+                    break
                 reports.append(self.run_generation())
         except ResourceLimitReached as exc:
             self._handoff(str(exc))
