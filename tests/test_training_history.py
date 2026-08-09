@@ -54,6 +54,24 @@ class TrainingHistoryTests(unittest.TestCase):
                 {"games_completed": 99}, {"resumed_from_games": 100}
             )
 
+    def test_resume_without_log_window_preserves_previous_series(self):
+        previous = {
+            "games": [40],
+            "win_rates": [0.0],
+            "games_completed": 40,
+            "games_completed_this_run": 40,
+        }
+        current = {
+            "resumed_from_games": 40,
+            "games_completed": 41,
+            "games_completed_this_run": 1,
+        }
+
+        merged = MODULE.merge_training_history(previous, current)
+
+        self.assertEqual(merged["games"], [40])
+        self.assertEqual(merged["win_rates"], [0.0])
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -56,9 +56,14 @@ def merge_training_history(previous: dict | None, current: dict) -> dict:
         )
 
     merged = dict(current)
-    for key, value in current.items():
-        if isinstance(value, list):
-            merged[key] = list(previous.get(key, [])) + value
+    series_keys = {
+        key
+        for history in (previous, current)
+        for key, value in history.items()
+        if isinstance(value, list) and key != "training_segments"
+    }
+    for key in series_keys:
+        merged[key] = list(previous.get(key, [])) + list(current.get(key, []))
 
     previous_segments = previous.get("training_segments")
     if previous_segments is None:
