@@ -31,7 +31,7 @@ class GuardFailure(RuntimeError):
     pass
 
 
-def host_guard(min_ram_gib: float = 2.0, min_disk_gib: float = 10.0) -> None:
+def host_guard(min_ram_gib: float = 1.0, min_disk_gib: float = 10.0) -> None:
     if psutil is not None and psutil.virtual_memory().available < min_ram_gib * 1024**3:
         raise GuardFailure(
             f"Laptop available RAM fell below the {min_ram_gib:g} GiB guard"
@@ -46,7 +46,7 @@ def run_guarded(
     timeout: float,
     cwd: Path = ROOT,
     *,
-    min_ram_gib: float = 2.0,
+    min_ram_gib: float = 1.0,
 ) -> None:
     host_guard(min_ram_gib=min_ram_gib)
     print("+", shlex.join(command), flush=True)
@@ -151,7 +151,7 @@ def snapshot_run(
     artifact_dir: Path,
     label: str,
     *,
-    min_ram_gib: float = 2.0,
+    min_ram_gib: float = 1.0,
 ) -> Path:
     remote_snapshot = f"/content/pilot_v1_snapshot_{time.time_ns()}.tar.gz"
     script = temporary / "snapshot_pilot.py"
