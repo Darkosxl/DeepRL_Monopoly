@@ -66,6 +66,8 @@ class Gemma4NotebookTests(unittest.TestCase):
             self.assertIn(value, source)
         self.assertIn('userdata.get("HF_TOKEN")', source)
         self.assertNotIn('os.getenv("HF_TOKEN")', source)
+        self.assertIn('RUN_ROOT = Path("/content/pilot_v1")', source)
+        self.assertNotIn('drive.mount(', source)
 
     def test_launcher_has_hard_guards_secret_free_archive_and_final_cleanup(self) -> None:
         source = RUNNER.read_text(encoding="utf-8")
@@ -73,9 +75,9 @@ class Gemma4NotebookTests(unittest.TestCase):
             '"git",\n            "archive"',
             'member.name.endswith("/.env")',
             '"--gpu", "T4"',
-            '"colab", "drivemount"',
             '"colab", "ls"',
             '"colab", "exec"',
+            '"colab", "download"',
             '"colab", "stop"',
             'finally:',
             'os.killpg(process.pid, signal.SIGTERM)',
@@ -102,6 +104,32 @@ class Gemma4NotebookTests(unittest.TestCase):
             path.write_text(json.dumps(notebook), encoding="utf-8")
             with self.assertRaisesRegex(runner.GuardFailure, "drive unavailable"):
                 runner.validate_executed_notebook(path)
+
+    def test_launcher_validates_downloaded_resume_snapshots(self) -> None:
+        spec = importlib.util.spec_from_file_location("colab_runner", RUNNER)
+        runner = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(runner)
+        with tempfile.TemporaryDirectory() as directory:
+            safe = Path(directory) / "safe.tar.gz"
+            payload = Path(directory) / "manifest.json"
+            payload.write_text("{}", encoding="utf-8")
+            import tarfile
+
+            with tarfile.open(safe, "w:gz") as archive:
+                archive.add(payload, arcname="pilot_v1/manifest.json")
+            runner.validate_snapshot(safe)
+
+            missing_manifest = Path(directory) / "missing-manifest.tar.gz"
+            with tarfile.open(missing_manifest, "w:gz") as archive:
+                archive.add(payload, arcname="pilot_v1/metrics.json")
+            with self.assertRaisesRegex(runner.GuardFailure, "manifest.json"):
+                runner.validate_snapshot(missing_manifest)
+
+            unsafe = Path(directory) / "unsafe.tar.gz"
+            with tarfile.open(unsafe, "w:gz") as archive:
+                archive.add(payload, arcname="pilot_v1/.env")
+            with self.assertRaisesRegex(runner.GuardFailure, "Unsafe"):
+                runner.validate_snapshot(unsafe)
 
 
 if __name__ == "__main__":

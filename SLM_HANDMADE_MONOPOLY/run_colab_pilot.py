@@ -25,10 +25,6 @@ ROOT = Path(__file__).resolve().parents[1]
 NOTEBOOK = Path(__file__).with_name("Gemma4_12B_Monopoly_QLoRA.ipynb")
 STAGES = ("teacher", "collect", "train", "eval")
 STAGE_TIMEOUT_HOURS = {"teacher": 14, "collect": 20, "train": 12, "eval": 20}
-DRIVE_OUTPUT = (
-    "/content/drive/MyDrive/DeepRL_Monopoly/Gemma4_12B_Monopoly/"
-    "pilot_v1/notebook_output"
-)
 
 
 class GuardFailure(RuntimeError):
@@ -122,6 +118,110 @@ def validate_executed_notebook(path: Path) -> None:
         )
 
 
+def validate_snapshot(path: Path) -> None:
+    with tarfile.open(path, "r:gz") as archive:
+        names = {member.name.rstrip("/") for member in archive.getmembers()}
+        unsafe = [
+            member.name
+            for member in archive.getmembers()
+            if (
+                (member.name != "pilot_v1" and not member.name.startswith("pilot_v1/"))
+                or member.name.endswith("/.env")
+                or "/__pycache__/" in member.name
+                or member.name.endswith(".pyc")
+            )
+        ]
+    if unsafe:
+        raise GuardFailure(f"Unsafe pilot snapshot members: {unsafe[:3]}")
+    if "pilot_v1/manifest.json" not in names:
+        raise GuardFailure("Pilot snapshot has no manifest.json")
+
+
+def snapshot_run(
+    session: str,
+    temporary: Path,
+    artifact_dir: Path,
+    label: str,
+) -> Path:
+    remote_snapshot = f"/content/pilot_v1_snapshot_{time.time_ns()}.tar.gz"
+    script = temporary / "snapshot_pilot.py"
+    script.write_text(
+        "from pathlib import Path\n"
+        "import os, tarfile\n"
+        "root = Path('/content/pilot_v1')\n"
+        "if not (root / 'manifest.json').exists():\n"
+        "    raise RuntimeError('No resumable pilot manifest exists')\n"
+        f"target = Path({remote_snapshot!r})\n"
+        "temporary = target.with_name(target.name + '.tmp')\n"
+        "with tarfile.open(temporary, 'w:gz') as archive:\n"
+        "    archive.add(root, arcname='pilot_v1')\n"
+        "os.replace(temporary, target)\n",
+        encoding="utf-8",
+    )
+    run_guarded(
+        ["colab", "exec", "-s", session, "-f", str(script), "--timeout", "3600"],
+        timeout=3700,
+    )
+    downloaded = artifact_dir / f"pilot_v1_{label}.tar.gz.tmp"
+    downloaded.unlink(missing_ok=True)
+    try:
+        run_guarded(
+            ["colab", "download", "-s", session, remote_snapshot, str(downloaded)],
+            timeout=3700,
+        )
+        validate_snapshot(downloaded)
+    except BaseException:
+        downloaded.unlink(missing_ok=True)
+        raise
+    finally:
+        try:
+            run_guarded(
+                ["colab", "rm", "-s", session, remote_snapshot],
+                timeout=5 * 60,
+            )
+        except Exception as exc:
+            print(f"WARNING: remote snapshot cleanup failed: {exc}", flush=True)
+    stage_snapshot = artifact_dir / f"pilot_v1_{label}.tar.gz"
+    os.replace(downloaded, stage_snapshot)
+    latest = artifact_dir / "pilot_v1_latest.tar.gz"
+    latest_temporary = latest.with_name(latest.name + ".tmp")
+    shutil.copy2(stage_snapshot, latest_temporary)
+    os.replace(latest_temporary, latest)
+    return stage_snapshot
+
+
+def restore_snapshot(session: str, temporary: Path, artifact_dir: Path) -> None:
+    latest = artifact_dir / "pilot_v1_latest.tar.gz"
+    if not latest.exists():
+        return
+    validate_snapshot(latest)
+    run_guarded(
+        [
+            "colab", "upload", "-s", session,
+            str(latest), "/content/pilot_v1_resume.tar.gz",
+        ],
+        timeout=3700,
+    )
+    script = temporary / "restore_pilot.py"
+    script.write_text(
+        "from pathlib import Path\n"
+        "import tarfile\n"
+        "snapshot = Path('/content/pilot_v1_resume.tar.gz')\n"
+        "with tarfile.open(snapshot, 'r:gz') as archive:\n"
+        "    archive.extractall('/content', filter='data')\n"
+        "snapshot.unlink()\n",
+        encoding="utf-8",
+    )
+    run_guarded(
+        ["colab", "exec", "-s", session, "-f", str(script), "--timeout", "3600"],
+        timeout=3700,
+    )
+    run_guarded(
+        ["colab", "ls", "-s", session, "/content/pilot_v1/manifest.json"],
+        timeout=5 * 60,
+    )
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument("--session", default="gemma4-monopoly-pilot-v1")
@@ -159,19 +259,12 @@ def main() -> int:
             return 0
 
         cleanup_needed = True
+        snapshot_needed = False
         try:
             run_guarded(["colab", "version"], timeout=60)
             run_guarded(
                 ["colab", "new", "-s", args.session, "--gpu", "T4"],
                 timeout=20 * 60,
-            )
-            run_guarded(
-                ["colab", "drivemount", "-s", args.session],
-                timeout=20 * 60,
-            )
-            run_guarded(
-                ["colab", "ls", "-s", args.session, "/content/drive/MyDrive"],
-                timeout=5 * 60,
             )
             run_guarded(
                 [
@@ -180,6 +273,7 @@ def main() -> int:
                 ],
                 timeout=20 * 60,
             )
+            restore_snapshot(args.session, temporary, artifact_dir)
 
             for stage in args.stages:
                 stage_file = temporary / "monopoly_stage.txt"
@@ -194,6 +288,7 @@ def main() -> int:
                 stage_notebook = temporary / f"Gemma4_12B_Monopoly_QLoRA_{stage}.ipynb"
                 shutil.copy2(NOTEBOOK, stage_notebook)
                 timeout_seconds = STAGE_TIMEOUT_HOURS[stage] * 3600
+                snapshot_needed = True
                 run_guarded(
                     [
                         "colab", "exec", "-s", args.session,
@@ -212,16 +307,16 @@ def main() -> int:
                     ["colab", "log", "-s", args.session, "-o", str(log_path)],
                     timeout=10 * 60,
                 )
-                for local_path in (local_executed, log_path):
-                    run_guarded(
-                        [
-                            "colab", "upload", "-s", args.session,
-                            str(local_path), f"{DRIVE_OUTPUT}/{local_path.name}",
-                        ],
-                        timeout=20 * 60,
-                    )
+                snapshot = snapshot_run(args.session, temporary, artifact_dir, stage)
+                snapshot_needed = False
+                print(f"Downloaded resumable {stage} snapshot to {snapshot}", flush=True)
         finally:
             if cleanup_needed:
+                if snapshot_needed:
+                    try:
+                        snapshot_run(args.session, temporary, artifact_dir, "shutdown")
+                    except Exception as exc:
+                        print(f"WARNING: final pilot snapshot failed: {exc}", flush=True)
                 try:
                     subprocess.run(
                         ["colab", "stop", "-s", args.session],
