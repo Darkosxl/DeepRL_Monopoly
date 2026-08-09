@@ -61,7 +61,7 @@ class ClassicCFRTests(unittest.TestCase):
                 payload = pickle.load(handle)
 
         self.assertEqual(restored.config, model.config)
-        self.assertEqual(payload["format_version"], 2)
+        self.assertEqual(payload["format_version"], 3)
         saved_node = next(
             value for table in payload["tables"] for value in table.values()
         )
@@ -85,6 +85,37 @@ class ClassicCFRTests(unittest.TestCase):
             self.assertTrue(path.exists())
             restored = MonteCarloCFR.load(path)
             self.assertGreater(sum(map(len, restored.tables)), 0)
+            self.assertIsNotNone(restored.in_progress)
+            self.assertEqual(restored.in_progress["decisions"], 2)
+            self.assertEqual(restored.games_trained, 0)
+
+    def test_interrupted_game_resumes_same_trajectory(self) -> None:
+        class StopAfterTwo:
+            def __init__(self):
+                self.calls = 0
+
+            def check(self):
+                self.calls += 1
+                if self.calls > 2:
+                    raise RuntimeError("stop")
+
+        model = MonteCarloCFR(
+            CFRConfig(rollout_horizon=1, max_rounds=2, max_decisions=4)
+        )
+        with self.assertRaisesRegex(RuntimeError, "stop"):
+            model.train_game(watchdog=StopAfterTwo())
+
+        self.assertEqual(model.in_progress["decisions"], 2)
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "resume.pkl.gz"
+            model.save(path)
+            restored = MonteCarloCFR.load(path)
+            stats = restored.train_game()
+
+        self.assertTrue(stats["resumed"])
+        self.assertEqual(stats["decisions"], 4)
+        self.assertTrue(stats["truncated"])
+        self.assertEqual(restored.games_trained, 0)
 
 
 if __name__ == "__main__":

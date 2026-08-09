@@ -29,7 +29,7 @@ from monopoly_drl.env import MonopolyEnv  # noqa: E402
 from monopoly_drl.state import STATE_DIM  # noqa: E402
 
 
-CHECKPOINT_VERSION = 2
+CHECKPOINT_VERSION = 3
 
 
 @dataclass
@@ -70,6 +70,27 @@ class SharedGame:
         return tuple(self.env.get_allowed_actions(self.env.whose_turn()))
 
     def information_key(self, player_id: int) -> bytes:
+        players = tuple(
+            (
+                player.player_id,
+                player.cash,
+                player.position,
+                player.in_jail,
+                player.jail_turns,
+                player.gooj_card,
+                player.bankrupt,
+            )
+            for player in self.env.players
+        )
+        properties = tuple(
+            (
+                square,
+                prop.owner,
+                prop.mortgaged,
+                prop.houses,
+            )
+            for square, prop in sorted(self.env.properties.items())
+        )
         offers = tuple(
             sorted(
                 (
@@ -84,7 +105,29 @@ class SharedGame:
             )
         )
         public = (
-            self.env._get_state(player_id).tobytes(),
+            player_id,
+            players,
+            properties,
+            tuple(self.env.turn_order),
+            self.env.current_turn_idx,
+            self.env.round,
+            self.env.max_rounds,
+            self.env.phase,
+            self.env.has_rolled,
+            tuple(self.env.out_of_turn_pids),
+            self.env.last_dice,
+            self.env.consecutive_doubles,
+            self.env.extra_roll_pending,
+            self.env.auction_property_id,
+            tuple(self.env.auction_bidders),
+            self.env.auction_current_pid,
+            self.env.auction_high_bid,
+            self.env.auction_high_bidder,
+            self.env.houses_available,
+            self.env.hotels_available,
+            self.env.debt_player,
+            self.env.debt_creditor,
+            self.env.debt_amount,
             self.legal_actions(),
             offers,
         )
@@ -158,6 +201,7 @@ class MonteCarloCFR:
         ]
         self.rng = random.Random(self.config.seed)
         self.games_trained = 0
+        self.in_progress: dict | None = None
 
     def _get_infoset(self, game: SharedGame, player_id: int) -> InfoSet:
         key = game.information_key(player_id)
@@ -276,11 +320,30 @@ class MonteCarloCFR:
         checkpoint_path: str | Path | None = None,
     ) -> dict:
         index = self.games_trained if game_index is None else game_index
-        game = SharedGame.new(
-            self.config.seed + index, self.config.max_rounds
-        )
+        resumed = self.in_progress is not None
+        if resumed:
+            progress = self.in_progress
+            if progress["game_index"] != index:
+                raise ValueError(
+                    f"Cannot start game {index}; game {progress['game_index']} "
+                    "is still in progress"
+                )
+            game = progress["game"]
+            decisions = progress["decisions"]
+            elapsed_before = progress["elapsed_seconds"]
+        else:
+            game = SharedGame.new(
+                self.config.seed + index, self.config.max_rounds
+            )
+            decisions = 0
+            elapsed_before = 0.0
+            self.in_progress = {
+                "game_index": index,
+                "game": game,
+                "decisions": decisions,
+                "elapsed_seconds": elapsed_before,
+            }
         started = time.perf_counter()
-        decisions = 0
 
         while not game.env.done and decisions < self.config.max_decisions:
             if watchdog is not None:
@@ -288,6 +351,11 @@ class MonteCarloCFR:
             action, details = self.optimize(game, index, decisions)
             game.step(action)
             decisions += 1
+            elapsed = elapsed_before + time.perf_counter() - started
+            self.in_progress.update(
+                decisions=decisions,
+                elapsed_seconds=elapsed,
+            )
             if progress_every > 0 and decisions % progress_every == 0:
                 print(
                     {
@@ -296,7 +364,7 @@ class MonteCarloCFR:
                         "decisions": decisions,
                         "legal_actions": int(details["actions"]),
                         "infosets": sum(len(table) for table in self.tables),
-                        "seconds": time.perf_counter() - started,
+                        "seconds": elapsed,
                     },
                     flush=True,
                 )
@@ -307,15 +375,20 @@ class MonteCarloCFR:
             ):
                 self.save(checkpoint_path)
 
-        self.games_trained = max(self.games_trained, index + 1)
+        completed = game.env.done
+        elapsed = elapsed_before + time.perf_counter() - started
+        if completed:
+            self.games_trained = max(self.games_trained, index + 1)
+            self.in_progress = None
         return {
             "game": index,
             "winner": game.env.winner(),
             "rounds": game.env.round,
             "decisions": decisions,
-            "truncated": not game.env.done,
+            "truncated": not completed,
             "infosets": sum(len(table) for table in self.tables),
-            "seconds": time.perf_counter() - started,
+            "seconds": elapsed,
+            "resumed": resumed,
         }
 
     def play_game(self, seed: int, use_average: bool = True) -> dict:
@@ -366,6 +439,17 @@ class MonteCarloCFR:
                 for table in self.tables
             ],
             "rng_state": self.rng.getstate(),
+            "in_progress": (
+                None
+                if self.in_progress is None
+                else {
+                    "game_index": self.in_progress["game_index"],
+                    "env": self.in_progress["game"].env,
+                    "random_state": self.in_progress["game"].random_state,
+                    "decisions": self.in_progress["decisions"],
+                    "elapsed_seconds": self.in_progress["elapsed_seconds"],
+                }
+            ),
         }
         with gzip.open(temporary, "wb") as handle:
             pickle.dump(payload, handle, protocol=pickle.HIGHEST_PROTOCOL)
@@ -376,7 +460,7 @@ class MonteCarloCFR:
         with gzip.open(path, "rb") as handle:
             payload = _CheckpointUnpickler(handle).load()
         version = payload.get("format_version", 1)
-        if version not in (1, CHECKPOINT_VERSION):
+        if version not in (1, 2, CHECKPOINT_VERSION):
             raise ValueError(f"Unsupported CFR checkpoint version: {version}")
         expected = (RULESET_VERSION, STATE_DIM, ACTION_SPACE_SIZE)
         actual = (
@@ -404,6 +488,17 @@ class MonteCarloCFR:
             model.tables.append(restored)
         model.games_trained = payload["games_trained"]
         model.rng.setstate(payload["rng_state"])
+        progress = payload.get("in_progress")
+        if progress is not None:
+            model.in_progress = {
+                "game_index": progress["game_index"],
+                "game": SharedGame(
+                    env=progress["env"],
+                    random_state=progress["random_state"],
+                ),
+                "decisions": progress["decisions"],
+                "elapsed_seconds": progress["elapsed_seconds"],
+            }
         return model
 
 
