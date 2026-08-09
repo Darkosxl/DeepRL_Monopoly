@@ -39,6 +39,15 @@ class MemoryWatchdogTests(unittest.TestCase):
             with self.assertRaisesRegex(MemoryLimitReached, "available RAM"):
                 self.watchdog.check()
 
+    def test_check_stops_if_memory_cannot_be_measured(self):
+        with patch.object(
+            self.watchdog,
+            "rss_bytes",
+            side_effect=MemoryLimitReached("Process RSS is unavailable"),
+        ):
+            with self.assertRaisesRegex(MemoryLimitReached, "RSS is unavailable"):
+                self.watchdog.check()
+
 
 if __name__ == "__main__":
     unittest.main()
