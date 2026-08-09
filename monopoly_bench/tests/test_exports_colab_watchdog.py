@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 import shutil
 import tarfile
 
@@ -16,6 +17,28 @@ from monopoly_bench.watchdog import GIB, ResourceLimitReached, ResourceSnapshot,
 
 
 PPO = "artifacts/ppo_plus/ppo_hybrid_2000_v2.pt"
+COLAB_ASSETS = Path(__file__).parents[1] / "colab"
+
+
+def test_colab_notebooks_are_clean_parameterized_assets() -> None:
+    expected = {
+        "ASU_Expert_Shard.ipynb": "monopolyzero-asu-job.json",
+        "MonopolyZero_Train.ipynb": "monopolyzero-train-job.json",
+    }
+    for name, parameter_file in expected.items():
+        notebook = json.loads((COLAB_ASSETS / name).read_text())
+        source = "".join(
+            line
+            for cell in notebook["cells"]
+            for line in cell.get("source", ())
+        )
+        assert notebook["nbformat"] == 4
+        assert parameter_file in source
+        assert all(not cell.get("outputs") for cell in notebook["cells"])
+        for index, cell in enumerate(notebook["cells"]):
+            if cell["cell_type"] == "code":
+                assert cell.get("execution_count") is None
+                compile("".join(cell["source"]), f"{name}:cell{index}", "exec")
 
 
 def test_native_and_canonical_slm_exports(bench_tmp) -> None:

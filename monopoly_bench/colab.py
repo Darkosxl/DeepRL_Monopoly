@@ -14,7 +14,7 @@ from .engine import ROOT
 
 
 SESSION_NAME = "monopolyzero-ppo-plus-v2-v1"
-REMOTE_RUNNER = Path(__file__).with_name("colab") / "remote_train.py"
+REMOTE_RUNNER = Path(__file__).with_name("colab") / "MonopolyZero_Train.ipynb"
 DEFAULT_PPO = ROOT / "artifacts/ppo_plus/ppo_hybrid_2000_v2.pt"
 DEFAULT_CFR = ROOT / "artifacts/cfr_ppo_plus/cfr_full_game_v2.pkl.gz"
 REPLAY_FILES = {
