@@ -77,9 +77,10 @@ def run_episode(
     def potential_delta(start: float, terminal: bool = False) -> float:
         next_potential = 0.0 if terminal else env._compute_reward(agent_pid)
         gamma = getattr(learning_agent, "gamma", 0.99)
+        decision_penalty = getattr(learning_agent, "decision_penalty", 0.0)
         return float(
             np.clip(
-                gamma * next_potential - start,
+                gamma * next_potential - start - decision_penalty,
                 -POTENTIAL_REWARD_LIMIT,
                 POTENTIAL_REWARD_LIMIT,
             )

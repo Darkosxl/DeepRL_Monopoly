@@ -3,6 +3,7 @@ from __future__ import annotations
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -14,7 +15,7 @@ ROOT = Path(__file__).resolve().parents[1]
 PPO_ROOT = ROOT / "RL_PPO(UNOFFICIAL)_MONOPOLY"
 sys.path.insert(0, str(PPO_ROOT))
 
-from monopoly_drl.actions import ACTION_SPACE_SIZE, ActionType  # noqa: E402
+from monopoly_drl.actions import ACTION_SPACE_SIZE, OFFSETS, ActionType  # noqa: E402
 from monopoly_drl.agent_ddqn import DDQNAgent  # noqa: E402
 from monopoly_drl.env import MonopolyEnv, TradeOffer  # noqa: E402
 from monopoly_drl.networks import DDQNNetwork  # noqa: E402
@@ -39,6 +40,27 @@ class DDQNAgentTests(unittest.TestCase):
         actions = DDQNAgent._masked_argmax(q_values, ((7,), ()))
 
         self.assertEqual(actions.tolist(), [7, int(ActionType.DO_NOTHING)])
+
+    def test_exploration_balances_action_sections(self) -> None:
+        allowed = [
+            int(ActionType.END_TURN),
+            OFFSETS["mortgage"],
+            OFFSETS["mortgage"] + 1,
+            OFFSETS["exch_trade"],
+            OFFSETS["exch_trade"] + 1,
+        ]
+        choices = []
+
+        def choose_first(options):
+            choices.append(list(options))
+            return options[0]
+
+        with patch("monopoly_drl.agent_ddqn.random.choice", side_effect=choose_first):
+            action = DDQNAgent._balanced_random_action(allowed)
+
+        self.assertEqual(action, int(ActionType.END_TURN))
+        self.assertEqual(len(choices[0]), 3)
+        self.assertEqual(len(choices[1]), 1)
 
     def test_hybrid_trade_only_intercepts_when_legal(self) -> None:
         env = MonopolyEnv(agent_ids=[0], max_rounds=2)
@@ -92,6 +114,7 @@ class DDQNAgentTests(unittest.TestCase):
             player_id = 0
             gamma = 0.99
             win_loss_bonus = 10.0
+            decision_penalty = 0.25
 
             def __init__(inner_self):
                 inner_self.transitions = []
@@ -122,8 +145,10 @@ class DDQNAgentTests(unittest.TestCase):
         np.testing.assert_array_equal(first[3], np.array([2.0]))
         self.assertEqual(first[5], (int(ActionType.END_TURN),))
         self.assertFalse(first[4])
+        self.assertAlmostEqual(first[2], 1.73)
         self.assertTrue(terminal[4])
         self.assertEqual(terminal[5], ())
+        self.assertAlmostEqual(terminal[2], 8.0)
         self.assertTrue(learner.finished)
 
     def test_checkpoint_restores_replay_and_optimizer(self) -> None:
@@ -163,6 +188,8 @@ class DDQNAgentTests(unittest.TestCase):
 
         self.assertEqual(restored.step_count, agent.step_count)
         self.assertEqual(restored.games_trained, agent.games_trained)
+        self.assertEqual(restored.exploration_mode, agent.exploration_mode)
+        self.assertEqual(restored.decision_penalty, agent.decision_penalty)
         self.assertEqual(len(restored.buffer), len(agent.buffer))
         self.assertEqual(restored.buffer.buffer[0][5], agent.buffer.buffer[0][5])
         for expected, actual in zip(

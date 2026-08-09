@@ -22,7 +22,7 @@ import torch.nn as nn
 import torch.optim as optim
 
 from .networks import DDQNNetwork
-from .actions import ActionType, ACTION_SPACE_SIZE
+from .actions import ACTION_SPACE_SIZE, OFFSETS, ActionType
 from .constants import RULESET_VERSION
 from .agent_ppo import fixed_buy_decision, fixed_accept_trade_decision
 from .state import STATE_DIM
@@ -122,6 +122,8 @@ class DDQNAgent:
         target_update_freq: int = 500,  # games between target network updates
         hidden_dim: int = 1024,
         win_loss_bonus: float = 10.0,   # constant c=10 for DDQN (paper Exp 1)
+        exploration_mode: str = "section_balanced",
+        decision_penalty: float = 0.002,
         device: str = "auto",
     ):
         self.player_id       = player_id
@@ -133,6 +135,10 @@ class DDQNAgent:
         self.batch_size      = batch_size
         self.target_update_freq = target_update_freq
         self.win_loss_bonus  = win_loss_bonus
+        if exploration_mode not in {"section_balanced", "uniform_actions"}:
+            raise ValueError(f"Unknown DDQN exploration mode: {exploration_mode}")
+        self.exploration_mode = exploration_mode
+        self.decision_penalty = decision_penalty
         self.hidden_dim = hidden_dim
         if device.startswith("cuda") and not torch.cuda.is_available():
             raise ValueError("CUDA was requested but is not available")
@@ -187,8 +193,25 @@ class DDQNAgent:
         if not nn_allowed:
             nn_allowed = [int(ActionType.DO_NOTHING)]
 
-        action = self.online_net.get_action(state, nn_allowed, self.epsilon)
+        if (
+            self.exploration_mode == "section_balanced"
+            and random.random() < self.epsilon
+        ):
+            action = self._balanced_random_action(nn_allowed)
+        else:
+            epsilon = self.epsilon if self.exploration_mode == "uniform_actions" else 0.0
+            action = self.online_net.get_action(state, nn_allowed, epsilon)
         return action, tuple(nn_allowed)
+
+    @staticmethod
+    def _balanced_random_action(allowed_actions: List[int]) -> int:
+        """Sample an action section first, then one legal action within it."""
+        starts = sorted(OFFSETS.items(), key=lambda item: item[1], reverse=True)
+        groups = {}
+        for action in allowed_actions:
+            section = next(name for name, start in starts if action >= start)
+            groups.setdefault(section, []).append(action)
+        return random.choice(random.choice(list(groups.values())))
 
     # ── Learning step ─────────────────────────────────────────────────────────
 
@@ -282,6 +305,8 @@ class DDQNAgent:
                     "batch_size": self.batch_size,
                     "target_update_freq": self.target_update_freq,
                     "win_loss_bonus": self.win_loss_bonus,
+                    "exploration_mode": self.exploration_mode,
+                    "decision_penalty": self.decision_penalty,
                 },
                 "online": self.online_net.state_dict(),
                 "target": self.target_net.state_dict(),
@@ -322,7 +347,12 @@ class DDQNAgent:
             for key, value in state.items():
                 if torch.is_tensor(value):
                     state[key] = value.to(self.device)
-        for key, value in ckpt["training_config"].items():
+        training_config = dict(ckpt["training_config"])
+        self.exploration_mode = training_config.pop(
+            "exploration_mode", "uniform_actions"
+        )
+        self.decision_penalty = float(training_config.pop("decision_penalty", 0.0))
+        for key, value in training_config.items():
             setattr(self, key, value)
         self.buffer.load_state_dict(ckpt["replay"])
         self.step_count = int(ckpt["step_count"])
