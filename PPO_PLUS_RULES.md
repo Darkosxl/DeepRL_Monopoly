@@ -1,6 +1,6 @@
 # PPO-plus Monopoly rules
 
-`ppo-plus-v1` is the one canonical game used by the new PPO and CFR paths. PPO
+`ppo-plus-v2` is the one canonical game used by the new PPO and CFR paths. PPO
 uses the engine directly; CFR clones and explores that same engine through
 `classic_cfr.py`. Algorithm-specific policy and checkpoint code remains
 separate.
@@ -27,6 +27,8 @@ presented as traditional-rule Monopoly.
   to that creditor. Bank debt returns deeds to the bank.
 - Property-for-cash and property-for-property offers are supported. The PPO
   fixed opponents use their individual buying personalities during auctions.
+- The engine rejects actions outside the current legal-action mask, including
+  premature turn endings and bankruptcy declarations by solvent players.
 - Games end when one player remains or after 200 rounds; a capped game is won
   by the greatest simulator net worth.
 
@@ -52,8 +54,8 @@ presented as traditional-rule Monopoly.
 ## Public dimensions and compatibility
 
 - Observation: 300 float values. The original 240-value prefix is preserved;
-  60 values add phase, actor, dice/doubles, inventory, debt, auction, and round
-  context.
+  60 values add phase, actor, dice/doubles, inventory, bankruptcy, jail-turn,
+  turn-order, debt, auction, round, and actionable trade context.
 - Action space: 2,958 actions. The original 2,953 IDs are preserved and five
   auction actions are appended.
 - Checkpoints record the ruleset, state dimension, and action dimension. Old
@@ -70,10 +72,24 @@ python 'RL_PPO(UNOFFICIAL)_MONOPOLY/train_and_save.py' \
   --out artifacts/ppo_plus/ppo_hybrid_model.pt
 ```
 
-The trainer checkpoints every 100 games. It saves and stops at 3 GiB process
-RSS, refuses to continue at 4 GiB, and stops when system-available RAM reaches
-2 GiB. Thresholds are configurable with the three memory CLI flags. The JSON
-history records elapsed time and peak CPU/GPU memory.
+The trainer uses potential-difference shaping between neural decisions plus a
+terminal win/loss reward. It checkpoints every 100 games, saves and stops at
+3 GiB process RSS, refuses to continue at 4 GiB, and stops when
+system-available RAM reaches 2 GiB. Thresholds are configurable with the three
+memory CLI flags. The JSON history records elapsed time and peak CPU/GPU memory.
+
+Resume a compatible PPO checkpoint to a total game count with the same output
+path and seed:
+
+```bash
+python 'RL_PPO(UNOFFICIAL)_MONOPOLY/train_and_save.py' \
+  --algo ppo --games 2000 --device auto --seed 42 --resume \
+  --out artifacts/ppo_plus/ppo_hybrid_model.pt
+```
+
+Format-three checkpoints include optimizer state, training configuration,
+learned steps, and completed games. Game-indexed seeding makes a game-boundary
+resume reproduce an uninterrupted run.
 
 Play a trained PPO checkpoint:
 
@@ -83,7 +99,7 @@ python 'RL_PPO(UNOFFICIAL)_MONOPOLY/play_game.py' \
   --model artifacts/ppo_plus/ppo_hybrid_model.pt
 ```
 
-Train one four-player Monte Carlo CFR game:
+Train one four-player CFR-style rollout regret game:
 
 ```bash
 python -m \
@@ -92,13 +108,16 @@ python -m \
   --checkpoint artifacts/cfr_ppo_plus/cfr.pkl.gz
 ```
 
-CFR keeps four separate regret/average-strategy tables and evaluates every
-currently legal action at each visited decision. It samples chance and uses
-finite rollouts because the full Monopoly game tree is intractable; therefore
-this is Monte Carlo CFR, not an exact full-tree equilibrium computation. CFR
-reports progress every 10 decisions and atomically saves partial regret tables
-every 100 decisions by default. An interrupted run also saves its tables. CFR
-checkpoints use Python pickle and should only be loaded from trusted sources.
+The trainer keeps four separate regret/average-strategy tables and evaluates
+every currently legal action at each visited decision using finite sampled
+rollouts. It performs direct rollout regret matching without counterfactual
+reach weighting or MCCFR sampling corrections. It is therefore a practical
+CFR-style approximation, not formal MCCFR, and carries no equilibrium
+guarantee. It reports progress every 10 decisions and atomically saves every
+100 decisions by default. Format-three checkpoints preserve the exact active
+game, RNG, decision count, and elapsed time, so `--resume` continues an
+interrupted trajectory. CFR checkpoints use Python pickle and should only be
+loaded from trusted sources.
 
 Play games from the learned average CFR policy:
 
