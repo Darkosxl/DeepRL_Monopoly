@@ -112,10 +112,7 @@ class DDQNAgent:
 
         # Hybrid: intercept trade acceptance
         if self.hybrid:
-            pending = next(
-                (o for o in env.pending_trades.values() if o.to_player == pid),
-                None
-            )
+            pending = env._incoming_trade(pid)
             if pending is not None:
                 if fixed_accept_trade_decision(env, pid):
                     return int(ActionType.ACCEPT_TRADE)

@@ -19,6 +19,7 @@ from monopoly_drl.agent_ppo import (  # noqa: E402
     fixed_accept_trade_decision,
 )
 from monopoly_drl.actions import ActionType  # noqa: E402
+from monopoly_drl.agents_fixed import TheGambler  # noqa: E402
 from monopoly_drl.env import PHASE_POST_ROLL, MonopolyEnv, TradeOffer  # noqa: E402
 from monopoly_drl.train import run_episode  # noqa: E402
 
@@ -49,6 +50,15 @@ class PPOAgentTests(unittest.TestCase):
 
         env.pending_trades[1] = TradeOffer(1, 0, cash_requested=100)
         self.assertFalse(fixed_accept_trade_decision(env, 0))
+
+        gambler = TheGambler(0)
+        self.assertFalse(gambler._should_accept_trade(env.pending_trades[1], env))
+        self.assertTrue(
+            gambler._should_accept_trade(
+                TradeOffer(1, 0, cash_requested=40),
+                env,
+            )
+        )
 
     def test_episode_stores_the_state_that_generated_the_action(self) -> None:
         class FakeEnv:
