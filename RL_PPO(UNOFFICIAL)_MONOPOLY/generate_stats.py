@@ -334,7 +334,7 @@ def simulate(
         pnames[pid] = f"P{pid} ({opp_labels[pid]})"
 
     # ── Environment ───────────────────────────────────────────────────────────
-    env = MonopolyEnv(agent_ids=[focus_pid], max_rounds=300)
+    env = MonopolyEnv(agent_ids=[focus_pid], max_rounds=200)
 
     # ── Accumulators ──────────────────────────────────────────────────────────
     accum = {
@@ -657,7 +657,7 @@ def simulate_and_collect(
     for pid in other_pids:
         pnames[pid] = f"P{pid} ({opp_labels[pid]})"
 
-    env = MonopolyEnv(agent_ids=[focus_pid], max_rounds=300)
+    env = MonopolyEnv(agent_ids=[focus_pid], max_rounds=200)
 
     accum    = {pid: defaultdict(list) for pid in range(n_players)}
     raw_won  = []

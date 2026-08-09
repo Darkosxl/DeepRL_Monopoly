@@ -368,7 +368,7 @@ def train_mixed(
     main_agent = _make_agent(algo, hybrid, main_pid)
 
     # ── Environment ───────────────────────────────────────────────────────────
-    env = MonopolyEnv(agent_ids=[main_pid], max_rounds=300)
+    env = MonopolyEnv(agent_ids=[main_pid], max_rounds=200)
 
     # ── Describe the run ──────────────────────────────────────────────────────
     drl_label = (
