@@ -27,6 +27,63 @@ from training_guard import GIB, MemoryWatchdog
 from monopoly_drl import train_ddqn, train_ppo
 
 
+def _history_segment(history: dict) -> dict:
+    return {
+        key: history.get(key)
+        for key in (
+            "resumed_from_games",
+            "games_completed_this_run",
+            "games_completed",
+            "elapsed_seconds",
+            "peak_rss_gib",
+            "peak_cuda_gib",
+        )
+    }
+
+
+def merge_training_history(previous: dict | None, current: dict) -> dict:
+    """Merge a completed resume segment into its checkpoint history."""
+    if not previous:
+        current["training_segments"] = [_history_segment(current)]
+        return current
+
+    expected = int(current.get("resumed_from_games", 0))
+    actual = int(previous.get("games_completed", 0))
+    if actual != expected:
+        raise ValueError(
+            f"History/checkpoint mismatch: history has {actual} games, "
+            f"checkpoint resumed from {expected}."
+        )
+
+    merged = dict(current)
+    for key, value in current.items():
+        if isinstance(value, list):
+            merged[key] = list(previous.get(key, [])) + value
+
+    previous_segments = previous.get("training_segments")
+    if previous_segments is None:
+        previous_segments = [_history_segment(previous)]
+    merged["training_segments"] = list(previous_segments) + [
+        _history_segment(current)
+    ]
+    merged["resumed_from_games"] = int(previous.get("resumed_from_games", 0))
+    merged["games_completed_this_run"] = int(
+        previous.get("games_completed_this_run", actual)
+    ) + int(current.get("games_completed_this_run", 0))
+    merged["elapsed_seconds"] = float(previous.get("elapsed_seconds", 0.0)) + float(
+        current.get("elapsed_seconds", 0.0)
+    )
+    if merged["games_completed_this_run"]:
+        merged["seconds_per_game"] = (
+            merged["elapsed_seconds"] / merged["games_completed_this_run"]
+        )
+    for key in ("peak_rss_gib", "peak_cuda_gib"):
+        merged[key] = max(
+            float(previous.get(key, 0.0)), float(current.get(key, 0.0))
+        )
+    return merged
+
+
 def main():
     parser = argparse.ArgumentParser(description="Train and save a Monopoly DRL agent")
     parser.add_argument(
@@ -76,6 +133,11 @@ def main():
         args.out = str(ROOT / "artifacts" / "ppo_plus" / f"{args.algo}_{mode}_model.pt")
     if args.resume and not Path(args.out).exists():
         parser.error(f"resume checkpoint does not exist: {args.out}")
+    history_path = str(Path(args.out).with_suffix("")) + "_history.json"
+    previous_history = None
+    if args.resume and Path(history_path).exists():
+        with open(history_path) as f:
+            previous_history = json.load(f)
 
     print(f"\n{'=' * 60}")
     print(f"  Algorithm : {args.algo.upper()}")
@@ -144,7 +206,7 @@ def main():
     print(f"Model saved to: {args.out}")
 
     # Save training history
-    history_path = str(Path(args.out).with_suffix("")) + "_history.json"
+    history = merge_training_history(previous_history, history)
     with open(history_path, "w") as f:
         json.dump(history, f, indent=2)
     print(f"Training history saved to: {history_path}")
