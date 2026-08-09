@@ -1,11 +1,10 @@
 """
 Action Space (Section IV-B of the paper).
 
-Total: 2922 dimensions
-  - Binary actions          :   9  (do_nothing, roll_dice, buy_property,
-                                     mortgage/unmortgage property represented
-                                     separately, use_gooj_card, end_turn,
-                                     declare_bankruptcy)
+Total: 2958 dimensions
+  - Global actions          :   9  (do_nothing, end_turn, roll_dice,
+                                     buy_property, use_gooj_card, pay_bail,
+                                     declare_bankruptcy, accept/decline trade)
   - Mortgage / Unmortgage   :  28 + 28 = 56
   - Sell house / Sell hotel :  22 + 22 = 44
   - Improve property        :  22 + 22 = 44  (house / hotel)
@@ -13,8 +12,7 @@ Total: 2922 dimensions
   - Make buy-trade offer    : 252  (3 players × 28 properties × 3 price levels)
   - Make sell-trade offer   : 252
   - Make exchange offer     : 2268 (3 players × 28 × 27)
-  - Accept trade offer      :   1  (binary)
-  - Decline trade offer     :   1  (binary)
+  - Auction pass / bid      :   5
 
 We index each action with a unique integer and provide mappings.
 """
@@ -144,4 +142,3 @@ def _section_size(name: str) -> int:
                 return OFFSETS[keys[i+1]] - OFFSETS[name]
             return ACTION_SPACE_SIZE - OFFSETS[name]
     return 0
-

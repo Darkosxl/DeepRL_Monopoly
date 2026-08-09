@@ -192,7 +192,12 @@ class CFRConfig:
 
 
 class MonteCarloCFR:
-    """Four independent regret tables over the shared PPO-plus game."""
+    """CFR-style rollout regret matching over the shared PPO-plus game.
+
+    This practical approximation does not apply counterfactual reach weights
+    or MCCFR sampling corrections and therefore has no equilibrium guarantee.
+    The historical class name remains for checkpoint and import compatibility.
+    """
 
     def __init__(self, config: CFRConfig | None = None):
         self.config = config or CFRConfig()
@@ -508,7 +513,9 @@ class MonteCarloCFR:
 
 
 def _build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Train PPO-plus Monte Carlo CFR")
+    parser = argparse.ArgumentParser(
+        description="Train the PPO-plus CFR-style rollout regret matcher"
+    )
     subparsers = parser.add_subparsers(dest="command", required=True)
     train = subparsers.add_parser("train")
     train.add_argument("--games", type=int, default=1)
