@@ -45,6 +45,7 @@ class Gemma4NotebookTests(unittest.TestCase):
             '"asu_teacher_hash": ASU_TEACHER_HASH',
             '"candidate_limit": 16',
             '"min_recovery_fraction": 0.25',
+            'Archived incompatible collection checkpoint',
             '"train_rows": 2048',
             '"validation_rows": 256',
             '"test_rows": 256',

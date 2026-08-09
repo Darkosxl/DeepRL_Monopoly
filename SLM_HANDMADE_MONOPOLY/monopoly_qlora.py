@@ -444,6 +444,8 @@ def shortlist_actions(
     mandatory_actions: Sequence[int],
     limit: int = 16,
 ) -> list[int]:
+    if limit < 1:
+        raise ValueError("Candidate limit must be positive")
     legal = list(dict.fromkeys(int(action) for action in legal_actions))
     if teacher_action not in legal:
         raise ValueError("Teacher action must be legal")
@@ -451,20 +453,26 @@ def shortlist_actions(
     if teacher_action not in pool:
         pool.insert(0, teacher_action)
     selected = [teacher_action]
-    selected.extend(
-        action
-        for action in dict.fromkeys(int(item) for item in mandatory_actions)
-        if action in pool and action not in selected
-    )
-    if limit < len(selected):
-        raise ValueError("Candidate limit cannot drop a mandatory ASU action")
-    by_family: dict[str, list[int]] = defaultdict(list)
-    for action in pool:
-        by_family[action_family(action)].append(action)
-    for family in sorted(by_family):
-        best = max(by_family[family], key=lambda action: (scores[action], -action))
-        if best not in selected:
-            selected.append(best)
+
+    def add_family_representatives(actions: Iterable[int]) -> None:
+        by_family: dict[str, list[int]] = defaultdict(list)
+        for action in actions:
+            if action in pool:
+                by_family[action_family(action)].append(action)
+        representatives = (
+            max(actions, key=lambda action: (scores[action], -action))
+            for actions in by_family.values()
+        )
+        for action in sorted(
+            representatives, key=lambda action: (-scores[action], action)
+        ):
+            if len(selected) >= limit:
+                return
+            if action not in selected:
+                selected.append(action)
+
+    add_family_representatives(dict.fromkeys(int(item) for item in mandatory_actions))
+    add_family_representatives(pool)
     remaining = sorted(
         (action for action in pool if action not in selected),
         key=lambda action: (-scores[action], action),

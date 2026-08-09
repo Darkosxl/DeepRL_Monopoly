@@ -152,6 +152,24 @@ class MonopolyQLoRAContractsTests(unittest.TestCase):
         self.assertIn(OFFSETS["mortgage"] + 1, selected)
         self.assertLessEqual(len(selected), 4)
 
+    def test_shortlist_caps_large_mandatory_liquidation_domains(self) -> None:
+        mortgages = [OFFSETS["mortgage"] + index for index in range(20)]
+        sell_property = OFFSETS["sell_prop"]
+        legal = mortgages + [sell_property]
+        scores = {action: float(index) for index, action in enumerate(legal)}
+        selected = shortlist_actions(
+            legal,
+            mortgages[0],
+            scores,
+            legal,
+            legal,
+            limit=16,
+        )
+        self.assertEqual(len(selected), 16)
+        self.assertEqual(selected[0], mortgages[0])
+        self.assertIn(mortgages[-1], selected)
+        self.assertIn(sell_property, selected)
+
     def test_asu_teacher_returns_legal_scored_candidates(self) -> None:
         self.env.phase = "post_roll"
         self.env.has_rolled = True
