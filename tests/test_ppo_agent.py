@@ -4,7 +4,9 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 
+import numpy as np
 import torch
 
 
@@ -12,9 +14,13 @@ ROOT = Path(__file__).resolve().parents[1]
 PPO_ROOT = ROOT / "RL_PPO(UNOFFICIAL)_MONOPOLY"
 sys.path.insert(0, str(PPO_ROOT))
 
-from monopoly_drl.agent_ppo import PPOAgent  # noqa: E402
+from monopoly_drl.agent_ppo import (  # noqa: E402
+    PPOAgent,
+    fixed_accept_trade_decision,
+)
 from monopoly_drl.actions import ActionType  # noqa: E402
 from monopoly_drl.env import PHASE_POST_ROLL, MonopolyEnv, TradeOffer  # noqa: E402
+from monopoly_drl.train import run_episode  # noqa: E402
 
 
 class PPOAgentTests(unittest.TestCase):
@@ -35,6 +41,82 @@ class PPOAgentTests(unittest.TestCase):
 
         self.assertIn(action, allowed)
         self.assertIsNotNone(log_prob)
+
+    def test_hybrid_trade_policy_accepts_positive_recipient_value(self) -> None:
+        env = MonopolyEnv(agent_ids=[0], max_rounds=2)
+        env.pending_trades[1] = TradeOffer(1, 0, cash_offered=100)
+        self.assertTrue(fixed_accept_trade_decision(env, 0))
+
+        env.pending_trades[1] = TradeOffer(1, 0, cash_requested=100)
+        self.assertFalse(fixed_accept_trade_decision(env, 0))
+
+    def test_episode_stores_the_state_that_generated_the_action(self) -> None:
+        class FakeEnv:
+            max_rounds = 1
+
+            def reset(inner_self):
+                inner_self.index = 0
+                inner_self.done = False
+                inner_self.players = [
+                    SimpleNamespace(bankrupt=False, properties=[]) for _ in range(4)
+                ]
+                return np.array([0.0], dtype=np.float32)
+
+            def whose_turn(inner_self):
+                return (1, 0)[inner_self.index]
+
+            def get_allowed_actions(inner_self, _pid):
+                return [int(ActionType.END_TURN)]
+
+            def step(inner_self, _action):
+                inner_self.index += 1
+                inner_self.done = inner_self.index == 2
+                return (
+                    np.array([float(inner_self.index)], dtype=np.float32),
+                    0.0,
+                    inner_self.done,
+                    {},
+                )
+
+            def winner(inner_self):
+                return 0
+
+            def _compute_reward(inner_self, _pid):
+                return 0.0
+
+        class FakePPO:
+            player_id = 0
+            n_steps = 1024
+
+            def __init__(inner_self):
+                inner_self.buffer = []
+                inner_self.stored_states = []
+
+            def choose_action(inner_self, state, _env, allowed):
+                inner_self.chosen_state = state.copy()
+                return allowed[0], -0.5, 0.0, allowed
+
+            def store(inner_self, state, *_args):
+                inner_self.stored_states.append(state.copy())
+                inner_self.buffer.append(state)
+
+            def update(inner_self, **_kwargs):
+                return {}
+
+            def add_win_loss(inner_self, _won):
+                return None
+
+        class FixedAgent:
+            player_id = 1
+
+            def choose_action(inner_self, _env):
+                return int(ActionType.END_TURN)
+
+        learner = FakePPO()
+        run_episode(FakeEnv(), learner, [FixedAgent()], 0, is_ppo=True)
+
+        np.testing.assert_array_equal(learner.chosen_state, np.array([1.0]))
+        np.testing.assert_array_equal(learner.stored_states[0], np.array([1.0]))
 
     def test_cpu_update_and_checkpoint_round_trip(self) -> None:
         env = MonopolyEnv(agent_ids=[0], max_rounds=2)
