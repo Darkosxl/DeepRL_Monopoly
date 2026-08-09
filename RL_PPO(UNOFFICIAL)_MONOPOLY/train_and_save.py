@@ -108,10 +108,23 @@ def main():
         )
 
     elapsed = time.time() - start
-    print(f"\nTraining complete in {elapsed:.1f}s")
-    print(f"Peak process RSS: {watchdog.peak_rss / GIB:.2f} GiB")
+    games_completed = history.get("games_completed", 0)
+    peak_rss_gib = watchdog.peak_rss / GIB
+    peak_cuda_gib = 0.0
+    status = "stopped early" if history.get("stopped_early") else "complete"
+    print(f"\nTraining {status} in {elapsed:.1f}s")
+    print(f"Games completed: {games_completed}/{args.games}")
+    if games_completed:
+        print(f"Mean wall time: {elapsed / games_completed:.3f}s/game")
+    print(f"Peak process RSS: {peak_rss_gib:.2f} GiB")
     if getattr(agent, "device", torch.device("cpu")).type == "cuda":
-        print(f"Peak CUDA memory: {torch.cuda.max_memory_allocated() / GIB:.2f} GiB")
+        peak_cuda_gib = torch.cuda.max_memory_allocated() / GIB
+        print(f"Peak CUDA memory: {peak_cuda_gib:.2f} GiB")
+
+    history["elapsed_seconds"] = elapsed
+    history["seconds_per_game"] = elapsed / games_completed if games_completed else None
+    history["peak_rss_gib"] = peak_rss_gib
+    history["peak_cuda_gib"] = peak_cuda_gib
 
     # Save model weights
     agent.save(args.out)

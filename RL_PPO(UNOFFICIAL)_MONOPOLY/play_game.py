@@ -17,7 +17,12 @@ import random
 import sys
 from datetime import datetime
 
-from monopoly_drl.actions import OFFSETS, PROPERTY_IDS, ActionType
+from monopoly_drl.actions import (
+    OFFSETS,
+    PROPERTY_IDS,
+    ActionType,
+    action_to_description,
+)
 from monopoly_drl.agent_ddqn import DDQNAgent
 from monopoly_drl.agent_ppo import PPOAgent
 from monopoly_drl.agents_fixed import FPAgentA, FPAgentB, FPAgentC
@@ -41,53 +46,6 @@ from monopoly_drl.env import (
     MonopolyEnv,
     TradeOffer,
 )
-
-# ── Isolated RNG for cosmetic card draws ──────────────────────────────────────
-# Using a separate Random instance means card display draws never touch the
-# game's global random state, keeping --seed fully reproducible.
-_card_rng = random.Random()
-
-
-# ── Chance / Community Chest cards ───────────────────────────────────────────
-
-CHANCE_CARDS = [
-    "Advance to Go (Collect $200)",
-    "Advance to Illinois Ave.",
-    "Advance to St. Charles Place",
-    "Advance token to nearest Railroad",
-    "Advance token to nearest Utility",
-    "Bank pays you dividend of $50",
-    "Get Out of Jail Free",
-    "Go Back 3 Spaces",
-    "Go to Jail. Go directly to Jail.",
-    "Make general repairs on all your property – $25 per house, $100 per hotel",
-    "Pay poor tax of $15",
-    "Take a trip to Reading Railroad",
-    "Take a walk on the Boardwalk",
-    "You have been elected Chairman of the Board – Pay each player $50",
-    "Your building loan matures – Collect $150",
-    "You have won a crossword competition – Collect $100",
-]
-
-COMMUNITY_CHEST_CARDS = [
-    "Advance to Go (Collect $200)",
-    "Bank error in your favor – Collect $200",
-    "Doctor's fees – Pay $50",
-    "From sale of stock you get $50",
-    "Get Out of Jail Free",
-    "Go to Jail. Go directly to Jail.",
-    "Grand Opera Night – Collect $50 from every player",
-    "Holiday Fund matures – Receive $100",
-    "Income tax refund – Collect $20",
-    "It is your birthday – Collect $10 from every player",
-    "Life insurance matures – Collect $100",
-    "Pay hospital fees of $100",
-    "Pay school fees of $150",
-    "Receive $25 consultancy fee",
-    "You are assessed for street repairs – $40 per house, $115 per hotel",
-    "You have won second prize in a beauty contest – Collect $10",
-    "You inherit $100",
-]
 
 CHANCE_SQUARES = {7, 22, 36}
 COMMUNITY_SQUARES = {2, 17, 33}
@@ -153,14 +111,9 @@ def log_action(logger, pid, pname, action_idx, env, info):
             elif sq == LUXURY_TAX_SQUARE:
                 lines.append(f"{pname} lands on Luxury Tax — pays $100")
             elif sq in CHANCE_SQUARES:
-                # Use isolated RNG so card draws don't affect dice reproducibility
-                card = _card_rng.choice(CHANCE_CARDS)
-                lines.append(f"{pname} lands on Chance")
-                lines.append(f'  ► Card: "{card}"')
+                lines.append(f"{pname} lands on Chance (no card effect)")
             elif sq in COMMUNITY_SQUARES:
-                card = _card_rng.choice(COMMUNITY_CHEST_CARDS)
-                lines.append(f"{pname} lands on Community Chest")
-                lines.append(f'  ► Card: "{card}"')
+                lines.append(f"{pname} lands on Community Chest (no card effect)")
             elif sq in env.properties:
                 prop = env.properties[sq]
                 lines.append(f"{pname} lands on {prop.name}")
@@ -269,7 +222,7 @@ def log_action(logger, pid, pname, action_idx, env, info):
         lines.append(f"{pname} sends a SELL offer to {target_pn}:")
         lines.append(f"  ► Offering: {prop.name}  |  Requesting: ${cash}")
 
-    else:
+    elif action_idx < OFFSETS["auction"]:
         local = action_idx - OFFSETS["exch_trade"]
         n = len(PROPERTY_IDS)
         t_idx = local // (n * (n - 1))
@@ -285,6 +238,13 @@ def log_action(logger, pid, pname, action_idx, env, info):
         lines.append(f"{pname} sends an EXCHANGE offer to {target_pn}:")
         lines.append(f"  ► Offering:   {offered.name}  (${offered.price})")
         lines.append(f"  ► Requesting: {requested.name}  (${requested.price})")
+
+    else:
+        lines.append(f"{pname}: {action_to_description(action_idx)}")
+
+    if "auction_winner" in info:
+        winner = _pname_from_pid(info["auction_winner"], env)
+        lines.append(f"  → {winner} wins for ${info['auction_price']}")
 
     for line in lines:
         if line:
@@ -424,7 +384,7 @@ def simulate(model_path, algo, n_players, log_path):
         if pid == trained_pid:
             state = env._get_state(pid)
             if algo == "ppo":
-                action, _, _ = trained_agent.choose_action(state, env, allowed)
+                action, _, _, _ = trained_agent.choose_action(state, env, allowed)
             else:
                 action = trained_agent.choose_action(state, env, allowed)
         else:
@@ -497,7 +457,6 @@ if __name__ == "__main__":
 
     if args.seed is not None:
         random.seed(args.seed)
-        _card_rng.seed(args.seed + 1)  # offset so card draws and dice don't correlate
 
     simulate(
         model_path=args.model,
