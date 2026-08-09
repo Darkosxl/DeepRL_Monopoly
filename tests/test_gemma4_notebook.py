@@ -85,6 +85,7 @@ class Gemma4NotebookTests(unittest.TestCase):
             'finally:',
             'min_ram_gib: float = 1.0',
             'min_ram_gib=0.5',
+            'monitor_ram=False',
             'os.killpg(process.pid, signal.SIGTERM)',
             'host_guard(min_ram_gib=min_ram_gib)',
         ):

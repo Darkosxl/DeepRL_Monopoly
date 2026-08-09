@@ -47,6 +47,7 @@ def run_guarded(
     cwd: Path = ROOT,
     *,
     min_ram_gib: float = 1.0,
+    monitor_ram: bool = True,
 ) -> None:
     host_guard(min_ram_gib=min_ram_gib)
     print("+", shlex.join(command), flush=True)
@@ -56,7 +57,7 @@ def run_guarded(
         while process.poll() is None:
             if time.monotonic() >= deadline:
                 raise TimeoutError(f"Hard timeout reached for {command[0]}")
-            host_guard(min_ram_gib=min_ram_gib)
+            host_guard(min_ram_gib=min_ram_gib if monitor_ram else 0.0)
             time.sleep(2)
     except BaseException:
         os.killpg(process.pid, signal.SIGTERM)
@@ -172,6 +173,7 @@ def snapshot_run(
         ["colab", "exec", "-s", session, "-f", str(script), "--timeout", "3600"],
         timeout=3700,
         min_ram_gib=min_ram_gib,
+        monitor_ram=False,
     )
     downloaded = artifact_dir / f"pilot_v1_{label}.tar.gz.tmp"
     downloaded.unlink(missing_ok=True)
@@ -228,6 +230,7 @@ def restore_snapshot(session: str, temporary: Path, artifact_dir: Path) -> None:
     run_guarded(
         ["colab", "exec", "-s", session, "-f", str(script), "--timeout", "3600"],
         timeout=3700,
+        monitor_ram=False,
     )
     run_guarded(
         ["colab", "ls", "-s", session, "/content/pilot_v1/manifest.json"],
@@ -308,6 +311,7 @@ def main() -> int:
                         "-f", str(stage_notebook), "--timeout", str(timeout_seconds),
                     ],
                     timeout=timeout_seconds + 5 * 60,
+                    monitor_ram=False,
                 )
                 executed = stage_notebook.with_name(stage_notebook.stem + "_output.ipynb")
                 if not executed.exists():
