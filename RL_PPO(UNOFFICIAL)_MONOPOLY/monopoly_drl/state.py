@@ -7,6 +7,7 @@ import numpy as np
 from .constants import (
     COLOR_GROUPS,
     MAX_HOUSES,
+    MAX_JAIL_TURNS,
     NUM_PLAYERS,
     PROPERTIES,
     PROPERTY_IDS,
@@ -16,7 +17,8 @@ from .constants import (
 
 
 BASE_STATE_DIM = 240
-STATE_DIM = 300
+LEGACY_PLUS_STATE_DIM = 300
+STATE_DIM = 589
 PHASES = ("pre_roll", "post_roll", "out_of_turn", "auction")
 
 
@@ -128,7 +130,9 @@ def build_state_vector(players, properties_dict, agent_id: int, env=None) -> np.
           [owner_onehot(5), mortgaged, is_monopoly, improvement_fraction]
 
     The agent's own player comes first in the player section. The original 240
-    values remain unchanged; the final 60 expose the PPO-plus rule context.
+    values and the first 60 PPO-plus values remain unchanged. The final 289
+    values make bankruptcy, jail progress, turn/auction order, and all pending
+    trade terms observable.
     """
     state = np.zeros(STATE_DIM, dtype=np.float32)
     idx = 0
@@ -214,6 +218,61 @@ def build_state_vector(players, properties_dict, agent_id: int, env=None) -> np.
     leader = getattr(env, "auction_high_bidder", None)
     state[idx if leader is None else idx + 1 + order.index(leader)] = 1.0
     idx += NUM_PLAYERS + 1
+
+    assert idx == LEGACY_PLUS_STATE_DIM, f"PPO-plus prefix mismatch: {idx}"
+
+    for relative_pid, pid in enumerate(order):
+        state[idx + relative_pid] = float(players[pid].bankrupt)
+    idx += NUM_PLAYERS
+
+    for relative_pid, pid in enumerate(order):
+        state[idx + relative_pid] = min(
+            players[pid].jail_turns / max(MAX_JAIL_TURNS, 1), 1.0
+        )
+    idx += NUM_PLAYERS
+
+    if env is not None:
+        for turn_slot, pid in enumerate(env.turn_order):
+            state[idx + turn_slot * NUM_PLAYERS + order.index(pid)] = 1.0
+    idx += NUM_PLAYERS * NUM_PLAYERS
+
+    if env is not None:
+        for pid in env.auction_bidders:
+            state[idx + order.index(pid)] = 1.0
+    idx += NUM_PLAYERS
+
+    state[idx] = float(bool(env and env.extra_roll_pending))
+    idx += 1
+
+    # One fixed-size public trade record per possible sender. Each record is
+    # recipient(5), offered deed(29), requested deed(29), and two cash values.
+    for sender in order:
+        offer = env.pending_trades.get(sender) if env is not None else None
+
+        recipient_slot = 0 if offer is None else 1 + order.index(offer.to_player)
+        state[idx + recipient_slot] = 1.0
+        idx += NUM_PLAYERS + 1
+
+        offered_slot = (
+            0
+            if offer is None or offer.offered_prop is None
+            else 1 + PROPERTY_IDS.index(offer.offered_prop.square_id)
+        )
+        state[idx + offered_slot] = 1.0
+        idx += len(PROPERTY_IDS) + 1
+
+        requested_slot = (
+            0
+            if offer is None or offer.requested_prop is None
+            else 1 + PROPERTY_IDS.index(offer.requested_prop.square_id)
+        )
+        state[idx + requested_slot] = 1.0
+        idx += len(PROPERTY_IDS) + 1
+
+        if offer is not None:
+            state[idx] = min(offer.cash_offered / 2000.0, 1.0)
+            state[idx + 1] = min(offer.cash_requested / 2000.0, 1.0)
+        idx += 2
 
     assert idx == STATE_DIM, f"State vector size mismatch: {idx}"
     return state

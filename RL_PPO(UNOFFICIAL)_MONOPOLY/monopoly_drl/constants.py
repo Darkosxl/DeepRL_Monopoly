@@ -134,7 +134,7 @@ TRADE_CASH_LEVELS = [0.75, 1.0, 1.25] # Work To Do Here
 AUCTION_BID_INCREMENTS = (1, 10, 50, 100)
 
 NUM_PLAYERS = 4 # Work To Do Here
-RULESET_VERSION = "ppo-plus-v1"
+RULESET_VERSION = "ppo-plus-v2"
 
 
 CHANCE_CARDS = [

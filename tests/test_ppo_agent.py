@@ -152,6 +152,9 @@ class PPOAgentTests(unittest.TestCase):
             ):
                 self.assertTrue(torch.equal(expected, actual))
 
+            with self.assertRaisesRegex(ValueError, "Incompatible PPO checkpoint"):
+                PPOAgent(0, hybrid=False, device="cpu").load(str(path))
+
     def test_legacy_checkpoint_has_clear_error(self) -> None:
         legacy = PPO_ROOT / "hy_model.pt"
         if not legacy.exists():

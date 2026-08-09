@@ -419,21 +419,31 @@ class PPOAgent:
 
     def load(self, path: str):
         ckpt = torch.load(path, map_location=self.device, weights_only=True)
-        if ckpt.get("state_dim") not in (None, STATE_DIM) or ckpt.get(
-            "action_dim"
-        ) not in (None, ACTION_SPACE_SIZE):
+        if ckpt.get("format_version") is None:
             raise ValueError(
-                f"Checkpoint dimensions {ckpt.get('state_dim')}x"
-                f"{ckpt.get('action_dim')} do not match {STATE_DIM}x"
-                f"{ACTION_SPACE_SIZE} ({RULESET_VERSION})."
+                "Legacy PPO checkpoint is incompatible with "
+                f"{RULESET_VERSION}; train a new checkpoint."
+            )
+        expected = {
+            "format_version": 2,
+            "ruleset": RULESET_VERSION,
+            "state_dim": STATE_DIM,
+            "action_dim": ACTION_SPACE_SIZE,
+            "player_id": self.player_id,
+            "hybrid": self.hybrid,
+        }
+        actual = {key: ckpt.get(key) for key in expected}
+        if actual != expected:
+            raise ValueError(
+                f"Incompatible PPO checkpoint metadata: {actual}; "
+                f"expected {expected}."
             )
         try:
             self.actor.load_state_dict(ckpt["actor"])
             self.critic.load_state_dict(ckpt["critic"])
         except RuntimeError as exc:
             raise ValueError(
-                "Legacy PPO checkpoint is incompatible with ppo-plus-v1; "
-                "train a new checkpoint."
+                f"PPO checkpoint network is incompatible with {RULESET_VERSION}."
             ) from exc
         if "optimizer" in ckpt:
             self.opt.load_state_dict(ckpt["optimizer"])
