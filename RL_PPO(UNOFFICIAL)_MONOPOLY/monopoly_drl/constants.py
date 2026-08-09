@@ -120,6 +120,8 @@ STARTING_CASH = 1500
 # Max houses per property
 MAX_HOUSES = 4
 MAX_HOTELS = 1
+HOUSE_SUPPLY = 32
+HOTEL_SUPPLY = 12
 
 # Jail rules
 MAX_JAIL_TURNS = 3

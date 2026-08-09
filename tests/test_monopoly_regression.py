@@ -13,6 +13,9 @@ sys.path.insert(0, str(PPO_ROOT))
 
 from monopoly_drl.actions import (  # noqa: E402
     ACTION_SPACE_SIZE,
+    OFFSETS,
+    PROPERTY_IDS,
+    REAL_ESTATE_IDS,
     ActionType,
     AuctionAction,
 )
@@ -30,6 +33,13 @@ class MonopolyRegressionTests(unittest.TestCase):
         self.env = MonopolyEnv(agent_ids=[0], max_rounds=5)
         self.env.turn_order = [0, 1, 2, 3]
         self.env.current_turn_idx = 0
+
+    def give_property(self, square: int, pid: int, mortgaged: bool = False) -> None:
+        prop = self.env.properties[square]
+        prop.owner = pid
+        prop.mortgaged = mortgaged
+        self.env.players[pid].properties.append(prop)
+        self.env._update_monopolies()
 
     def test_public_dimensions(self) -> None:
         self.assertEqual(ACTION_SPACE_SIZE, 2958)
@@ -124,6 +134,74 @@ class MonopolyRegressionTests(unittest.TestCase):
         self.assertFalse(player.in_jail)
         self.assertEqual(player.position, 14)
         self.assertFalse(self.env.extra_roll_pending)
+
+    def test_liquidation_pays_unpaid_rent(self) -> None:
+        self.give_property(39, 1)
+        self.give_property(1, 0)
+        player = self.env.players[0]
+        player.cash = 20
+        player.position = 37
+        self.env.phase = PHASE_POST_ROLL
+        self.env.has_rolled = False
+
+        with patch("monopoly_drl.env.random.randint", side_effect=[1, 1]):
+            self.env.step(int(ActionType.ROLL_DICE))
+
+        self.assertEqual(self.env.debt_amount, 30)
+        mortgage = OFFSETS["mortgage"] + PROPERTY_IDS.index(1)
+        self.assertIn(mortgage, self.env.get_allowed_actions(0))
+        self.env.step(mortgage)
+
+        self.assertIsNone(self.env.debt_player)
+        self.assertEqual(player.cash, 0)
+        self.assertEqual(self.env.players[1].cash, 1550)
+
+    def test_bankruptcy_transfers_deeds_to_creditor(self) -> None:
+        self.give_property(39, 1)
+        self.give_property(1, 0, mortgaged=True)
+        player = self.env.players[0]
+        player.cash = 0
+        player.position = 37
+        self.env.phase = PHASE_POST_ROLL
+        self.env.has_rolled = False
+
+        with patch("monopoly_drl.env.random.randint", side_effect=[1, 1]):
+            self.env.step(int(ActionType.ROLL_DICE))
+
+        self.assertEqual(
+            self.env.get_allowed_actions(0), [int(ActionType.DECLARE_BANKRUPT)]
+        )
+        self.env.step(int(ActionType.DECLARE_BANKRUPT))
+
+        self.assertTrue(player.bankrupt)
+        self.assertEqual(self.env.properties[1].owner, 1)
+        self.assertIn(self.env.properties[1], self.env.players[1].properties)
+
+    def test_house_and_hotel_bank_inventory_is_conserved(self) -> None:
+        self.give_property(1, 0)
+        self.give_property(3, 0)
+        prop = self.env.properties[1]
+        house_action = OFFSETS["improve_house"] + REAL_ESTATE_IDS.index(1)
+        hotel_action = OFFSETS["improve_hotel"] + REAL_ESTATE_IDS.index(1)
+        sell_hotel_action = OFFSETS["sell_hotel"] + REAL_ESTATE_IDS.index(1)
+
+        self.env.houses_available = 1
+        self.env.step(house_action)
+        self.assertEqual(prop.houses, 1)
+        self.assertEqual(self.env.houses_available, 0)
+        self.assertNotIn(house_action, self.env.get_allowed_actions(0))
+
+        prop.houses = 4
+        self.env.houses_available = 28
+        self.env.step(hotel_action)
+        self.assertEqual(prop.houses, 5)
+        self.assertEqual(self.env.houses_available, 32)
+        self.assertEqual(self.env.hotels_available, 11)
+
+        self.env.step(sell_hotel_action)
+        self.assertEqual(prop.houses, 4)
+        self.assertEqual(self.env.houses_available, 28)
+        self.assertEqual(self.env.hotels_available, 12)
 
 
 if __name__ == "__main__":

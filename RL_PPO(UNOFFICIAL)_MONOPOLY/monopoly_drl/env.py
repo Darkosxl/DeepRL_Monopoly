@@ -29,6 +29,8 @@ from .constants import (
     FREE_PARKING,
     GO_SALARY,
     GO_TO_JAIL_SQUARE,
+    HOTEL_SUPPLY,
+    HOUSE_SUPPLY,
     INCOME_TAX_SQUARE,
     JAIL_BAIL,
     JAIL_SQUARE,
@@ -118,6 +120,13 @@ class MonopolyEnv:
         self.auction_current_pid = None
         self.auction_high_bid = 0
         self.auction_high_bidder = None
+        self.houses_available = HOUSE_SUPPLY
+        self.hotels_available = HOTEL_SUPPLY
+
+        # Only unpaid rent creates a creditor in the PPO-plus ruleset.
+        self.debt_player = None
+        self.debt_creditor = None
+        self.debt_amount = 0
 
         # ── BUG 1 FIX: rescue flag ─────────────────────────────────────────
         # Set to a player's pid when they owe more than they have after paying
@@ -254,11 +263,8 @@ class MonopolyEnv:
                 return allowed
 
             else:
-                # ── BUG 1 FIX: emergency rescue phase ─────────────────────
-                # If the player is in debt (went negative after paying rent),
-                # offer them sell-house / mortgage actions to raise funds.
-                # Only offer DECLARE_BANKRUPT when they have nothing left to sell.
-                if self.player_needs_funds == pid:
+                # Unpaid rent must be settled before the turn can continue.
+                if self.debt_player == pid:
                     rescue = []
                     rescue += self._improve_actions(pid)  # sell_house / sell_hotel
                     rescue += self._mortgage_actions(pid)  # mortgage properties
@@ -278,9 +284,6 @@ class MonopolyEnv:
                 allowed += self._mortgage_actions(pid)
                 allowed.append(int(ActionType.END_TURN))
 
-                if player.cash < 0:
-                    allowed.append(int(ActionType.DECLARE_BANKRUPT))
-
                 return allowed if allowed else [int(ActionType.END_TURN)]
 
         return [int(ActionType.DO_NOTHING)]
@@ -294,13 +297,6 @@ class MonopolyEnv:
         if self.phase == PHASE_AUCTION:
             self._handle_auction_action(pid, action_idx, info)
             return
-
-        # ── BUG 1 FIX: clear rescue flag when debt is repaid ──────────────
-        # After each action (sell house, mortgage, etc.) check whether the
-        # player has recovered.  If so, lift the flag so normal post-roll
-        # actions become available again on the next step.
-        if self.player_needs_funds == pid and player.cash >= 0:
-            self.player_needs_funds = None
 
         # ── Binary actions ─────────────────────────────────────────────────
         if action_idx < OFFSETS["mortgage"]:
@@ -354,6 +350,7 @@ class MonopolyEnv:
             if prop.owner == pid and not prop.mortgaged and prop.houses == 0:
                 prop.mortgaged = True
                 player.cash += prop.mortgage_v
+                self._settle_debt(pid)
             return
 
         # ── Unmortgage ─────────────────────────────────────────────────────
@@ -375,10 +372,12 @@ class MonopolyEnv:
                 prop.owner == pid
                 and prop.is_monopoly
                 and prop.houses < MAX_HOUSES
+                and self.houses_available > 0
                 and player.can_afford(hp)
             ):
                 prop.houses += 1
                 player.cash -= hp
+                self.houses_available -= 1
             return
 
         # ── Improve hotel ──────────────────────────────────────────────────
@@ -390,10 +389,13 @@ class MonopolyEnv:
                 prop.owner == pid
                 and prop.is_monopoly
                 and prop.houses == MAX_HOUSES
+                and self.hotels_available > 0
                 and player.can_afford(hp)
             ):
                 prop.houses = 5
                 player.cash -= hp
+                self.hotels_available -= 1
+                self.houses_available += MAX_HOUSES
             return
 
         # ── Sell house ─────────────────────────────────────────────────────
@@ -403,15 +405,24 @@ class MonopolyEnv:
             if prop.owner == pid and 1 <= prop.houses <= MAX_HOUSES:
                 prop.houses -= 1
                 player.cash += prop.data["house_price"] // 2
+                self.houses_available += 1
+                self._settle_debt(pid)
             return
 
         # ── Sell hotel ─────────────────────────────────────────────────────
         if action_idx < OFFSETS["sell_prop"]:
             local = action_idx - OFFSETS["sell_hotel"]
             prop = self.properties[REAL_ESTATE_IDS[local]]
-            if prop.owner == pid and prop.houses == 5:
+            if (
+                prop.owner == pid
+                and prop.houses == 5
+                and self.houses_available >= MAX_HOUSES
+            ):
                 prop.houses = MAX_HOUSES
                 player.cash += prop.data["house_price"] // 2
+                self.hotels_available += 1
+                self.houses_available -= MAX_HOUSES
+                self._settle_debt(pid)
             return
 
         # ── Sell property to bank ──────────────────────────────────────────
@@ -424,6 +435,7 @@ class MonopolyEnv:
                 prop.owner = None
                 prop.mortgaged = False
                 self._update_monopolies()
+                self._settle_debt(pid)
             return
 
         # ── Trade offers ───────────────────────────────────────────────────
@@ -673,20 +685,16 @@ class MonopolyEnv:
         n_utils = owner.utilities_owned()
         rent = prop.get_rent(dice_total, n_rails, n_utils)
 
-        # ── BUG 1 FIX: let cash go negative so the rescue flag triggers ────
-        # The original code capped payment at player.cash, which meant cash
-        # could never go below zero and the rescue trigger (cash < 0) never
-        # fired.  Now we deduct the full rent from the player's cash (it can
-        # go negative) while still crediting the owner only what was
-        # actually available.
         owner_receives = min(rent, player.cash)
-        player.cash -= rent  # may go negative — rescue phase handles it
+        player.cash -= owner_receives
         owner.cash += owner_receives
         info["rent_paid"] = owner_receives
 
-        if player.cash < 0:
-            # Don't bankrupt immediately. Set the rescue flag so the next
-            # get_allowed_actions() call offers sell-house / mortgage actions.
+        unpaid = rent - owner_receives
+        if unpaid:
+            self.debt_player = pid
+            self.debt_creditor = owner.player_id
+            self.debt_amount = unpaid
             self.player_needs_funds = pid
 
     def _do_buy(self, pid: int):
@@ -703,17 +711,62 @@ class MonopolyEnv:
 
     def _do_bankrupt(self, pid: int):
         player = self.players[pid]
+        creditor_pid = self.debt_creditor if self.debt_player == pid else None
+
+        # Return all improvements and pay their half-price proceeds first.
+        for prop in player.properties:
+            if prop.houses == 5:
+                self.hotels_available += 1
+                player.cash += 5 * (prop.data["house_price"] // 2)
+            elif prop.houses > 0:
+                self.houses_available += prop.houses
+                player.cash += prop.houses * (prop.data["house_price"] // 2)
+            prop.houses = 0
+        self._settle_debt(pid)
+
         player.bankrupt = True
+        creditor = (
+            self.players[creditor_pid]
+            if creditor_pid is not None and not self.players[creditor_pid].bankrupt
+            else None
+        )
+        if creditor is not None:
+            creditor.cash += player.cash
+            creditor.gooj_card = creditor.gooj_card or player.gooj_card
+            for prop in player.properties:
+                prop.owner = creditor.player_id
+                creditor.properties.append(prop)
+        else:
+            for prop in player.properties:
+                prop.owner = None
+                prop.mortgaged = False
+
         player.cash = 0
-        # ── BUG 1 FIX: clear rescue flag when player is finally bankrupted ─
+        player.gooj_card = False
+        player.properties = []
+        self._clear_debt(pid)
+        self._update_monopolies()
+
+    def _settle_debt(self, pid: int):
+        if self.debt_player != pid or self.debt_amount <= 0:
+            return
+        player = self.players[pid]
+        payment = min(player.cash, self.debt_amount)
+        player.cash -= payment
+        if self.debt_creditor is not None:
+            self.players[self.debt_creditor].cash += payment
+        self.debt_amount -= payment
+        if self.debt_amount == 0:
+            self._clear_debt(pid)
+
+    def _clear_debt(self, pid: int):
+        if self.debt_player != pid:
+            return
+        self.debt_player = None
+        self.debt_creditor = None
+        self.debt_amount = 0
         if self.player_needs_funds == pid:
             self.player_needs_funds = None
-        for prop in player.properties:
-            prop.owner = None
-            prop.houses = 0
-            prop.mortgaged = False
-        player.properties = []
-        self._update_monopolies()
 
     def _do_accept_trade(self, pid: int):
         offer = None
@@ -829,13 +882,23 @@ class MonopolyEnv:
             if prop.owner != pid:
                 continue
             hp = prop.data["house_price"]
-            if prop.is_monopoly and prop.houses < MAX_HOUSES and player.can_afford(hp):
+            if (
+                prop.is_monopoly
+                and prop.houses < MAX_HOUSES
+                and self.houses_available > 0
+                and player.can_afford(hp)
+            ):
                 allowed.append(OFFSETS["improve_house"] + i)
-            if prop.is_monopoly and prop.houses == MAX_HOUSES and player.can_afford(hp):
+            if (
+                prop.is_monopoly
+                and prop.houses == MAX_HOUSES
+                and self.hotels_available > 0
+                and player.can_afford(hp)
+            ):
                 allowed.append(OFFSETS["improve_hotel"] + i)
             if 1 <= prop.houses < 5:
                 allowed.append(OFFSETS["sell_house"] + i)
-            if prop.houses == 5:
+            if prop.houses == 5 and self.houses_available >= MAX_HOUSES:
                 allowed.append(OFFSETS["sell_hotel"] + i)
         return allowed
 
