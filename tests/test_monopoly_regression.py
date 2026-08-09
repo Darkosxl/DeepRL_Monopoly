@@ -46,10 +46,35 @@ class MonopolyRegressionTests(unittest.TestCase):
     def test_public_dimensions(self) -> None:
         self.assertEqual(ACTION_SPACE_SIZE, 2958)
         state = self.env._get_state(0)
-        self.assertEqual(state.shape, (300,))
+        self.assertEqual(state.shape, (589,))
         self.assertEqual(float(state[240:244].sum()), 1.0)
         self.assertEqual(float(state[244:248].sum()), 1.0)
         self.assertEqual(float(state[248:252].sum()), 1.0)
+
+    def test_observation_distinguishes_public_pending_state(self) -> None:
+        baseline = self.env._get_state(0)
+
+        self.env.pending_trades[2] = TradeOffer(2, 0, cash_offered=100)
+        with_trade = self.env._get_state(0)
+        self.assertFalse((baseline == with_trade).all())
+
+        self.env.pending_trades[2] = TradeOffer(2, 0, cash_offered=200)
+        different_terms = self.env._get_state(0)
+        self.assertFalse((with_trade == different_terms).all())
+
+        self.env.pending_trades = {}
+        self.env.turn_order = [0, 2, 1, 3]
+        reordered = self.env._get_state(0)
+        self.assertFalse((baseline == reordered).all())
+
+        self.env.phase = PHASE_AUCTION
+        self.env.auction_property_id = 1
+        self.env.auction_current_pid = 0
+        self.env.auction_bidders = [0, 1]
+        two_bidders = self.env._get_state(0)
+        self.env.auction_bidders = [0, 1, 2]
+        three_bidders = self.env._get_state(0)
+        self.assertFalse((two_bidders == three_bidders).all())
 
     def test_turn_sequence_and_property_purchase(self) -> None:
         self.assertEqual(
