@@ -17,10 +17,10 @@ Fix 3 – update() now receives (last_next_state, last_done) so that
     mid-game rollout boundaries are bootstrapped correctly by the critic
     instead of defaulting to zero.
 
-Fix 5 – reward clipping added. The raw ratio reward is unbounded and
-    non-stationary, which destabilises the critic's value targets.
-    Clipping to [-1, 1] gives the critic a stationary regression target
-    while preserving the ordinal signal the policy needs.
+Fix 5 – bounded potential shaping replaces repeated absolute state rewards.
+    Each neural transition receives gamma*Phi(next)-Phi(current), and terminal
+    transitions use zero terminal potential before the explicit win/loss bonus.
+    This prevents policies from earning reward merely by taking extra actions.
 """
 
 import random
@@ -35,8 +35,7 @@ from .agents_fixed import FixedPolicyAgent, FPAgentA, FPAgentB, FPAgentC
 from .constants import NUM_PLAYERS
 from .env import MonopolyEnv
 
-# FIX 5: clip each step reward to this range
-REWARD_CLIP = 1.0
+POTENTIAL_REWARD_LIMIT = 2.0
 
 
 def run_episode(
@@ -74,12 +73,14 @@ def run_episode(
 
     pending_transition = None
 
-    def potential_delta(start: float) -> float:
+    def potential_delta(start: float, terminal: bool = False) -> float:
+        next_potential = 0.0 if terminal else env._compute_reward(agent_pid)
+        gamma = getattr(learning_agent, "gamma", 0.99)
         return float(
             np.clip(
-                env._compute_reward(agent_pid) - start,
-                -REWARD_CLIP,
-                REWARD_CLIP,
+                gamma * next_potential - start,
+                -POTENTIAL_REWARD_LIMIT,
+                POTENTIAL_REWARD_LIMIT,
             )
         )
 
@@ -224,7 +225,8 @@ def run_episode(
 
     if pending_transition is not None:
         reward = potential_delta(
-            pending_transition[4] if is_ppo else pending_transition[2]
+            pending_transition[4] if is_ppo else pending_transition[2],
+            terminal=True,
         )
         total_reward += reward
         if update_online and is_ppo:
