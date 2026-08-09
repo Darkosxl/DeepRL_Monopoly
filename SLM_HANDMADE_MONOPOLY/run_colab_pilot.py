@@ -33,14 +33,22 @@ class GuardFailure(RuntimeError):
 
 def host_guard(min_ram_gib: float = 2.0, min_disk_gib: float = 10.0) -> None:
     if psutil is not None and psutil.virtual_memory().available < min_ram_gib * 1024**3:
-        raise GuardFailure("Laptop available RAM fell below the 2 GiB guard")
+        raise GuardFailure(
+            f"Laptop available RAM fell below the {min_ram_gib:g} GiB guard"
+        )
     free = shutil.disk_usage(ROOT).free
     if free < min_disk_gib * 1024**3:
         raise GuardFailure("Laptop free disk fell below the 10 GiB guard")
 
 
-def run_guarded(command: list[str], timeout: float, cwd: Path = ROOT) -> None:
-    host_guard()
+def run_guarded(
+    command: list[str],
+    timeout: float,
+    cwd: Path = ROOT,
+    *,
+    min_ram_gib: float = 2.0,
+) -> None:
+    host_guard(min_ram_gib=min_ram_gib)
     print("+", shlex.join(command), flush=True)
     process = subprocess.Popen(command, cwd=cwd, start_new_session=True)
     deadline = time.monotonic() + timeout
@@ -48,7 +56,7 @@ def run_guarded(command: list[str], timeout: float, cwd: Path = ROOT) -> None:
         while process.poll() is None:
             if time.monotonic() >= deadline:
                 raise TimeoutError(f"Hard timeout reached for {command[0]}")
-            host_guard()
+            host_guard(min_ram_gib=min_ram_gib)
             time.sleep(2)
     except BaseException:
         os.killpg(process.pid, signal.SIGTERM)
@@ -142,6 +150,8 @@ def snapshot_run(
     temporary: Path,
     artifact_dir: Path,
     label: str,
+    *,
+    min_ram_gib: float = 2.0,
 ) -> Path:
     remote_snapshot = f"/content/pilot_v1_snapshot_{time.time_ns()}.tar.gz"
     script = temporary / "snapshot_pilot.py"
@@ -161,6 +171,7 @@ def snapshot_run(
     run_guarded(
         ["colab", "exec", "-s", session, "-f", str(script), "--timeout", "3600"],
         timeout=3700,
+        min_ram_gib=min_ram_gib,
     )
     downloaded = artifact_dir / f"pilot_v1_{label}.tar.gz.tmp"
     downloaded.unlink(missing_ok=True)
@@ -168,6 +179,7 @@ def snapshot_run(
         run_guarded(
             ["colab", "download", "-s", session, remote_snapshot, str(downloaded)],
             timeout=3700,
+            min_ram_gib=min_ram_gib,
         )
         validate_snapshot(downloaded)
     except BaseException:
@@ -178,6 +190,7 @@ def snapshot_run(
             run_guarded(
                 ["colab", "rm", "-s", session, remote_snapshot],
                 timeout=5 * 60,
+                min_ram_gib=min_ram_gib,
             )
         except Exception as exc:
             print(f"WARNING: remote snapshot cleanup failed: {exc}", flush=True)
@@ -314,7 +327,13 @@ def main() -> int:
             if cleanup_needed:
                 if snapshot_needed:
                     try:
-                        snapshot_run(args.session, temporary, artifact_dir, "shutdown")
+                        snapshot_run(
+                            args.session,
+                            temporary,
+                            artifact_dir,
+                            "shutdown",
+                            min_ram_gib=0.5,
+                        )
                     except Exception as exc:
                         print(f"WARNING: final pilot snapshot failed: {exc}", flush=True)
                 try:
