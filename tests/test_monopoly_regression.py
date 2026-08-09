@@ -46,7 +46,7 @@ class MonopolyRegressionTests(unittest.TestCase):
     def test_public_dimensions(self) -> None:
         self.assertEqual(ACTION_SPACE_SIZE, 2958)
         state = self.env._get_state(0)
-        self.assertEqual(state.shape, (589,))
+        self.assertEqual(state.shape, (300,))
         self.assertEqual(float(state[240:244].sum()), 1.0)
         self.assertEqual(float(state[244:248].sum()), 1.0)
         self.assertEqual(float(state[248:252].sum()), 1.0)
@@ -219,6 +219,8 @@ class MonopolyRegressionTests(unittest.TestCase):
         self.assertTrue(player.bankrupt)
         self.assertEqual(self.env.properties[1].owner, 1)
         self.assertIn(self.env.properties[1], self.env.players[1].properties)
+        self.assertEqual(self.env.active_player_id(), 1)
+        self.assertEqual(self.env.whose_turn(), 1)
 
     def test_house_and_hotel_bank_inventory_is_conserved(self) -> None:
         self.give_property(1, 0)

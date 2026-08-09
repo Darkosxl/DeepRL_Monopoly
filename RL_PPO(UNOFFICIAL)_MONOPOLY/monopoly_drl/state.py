@@ -17,8 +17,7 @@ from .constants import (
 
 
 BASE_STATE_DIM = 240
-LEGACY_PLUS_STATE_DIM = 300
-STATE_DIM = 589
+STATE_DIM = 300
 PHASES = ("pre_roll", "post_roll", "out_of_turn", "auction")
 
 
@@ -130,9 +129,8 @@ def build_state_vector(players, properties_dict, agent_id: int, env=None) -> np.
           [owner_onehot(5), mortgaged, is_monopoly, improvement_fraction]
 
     The agent's own player comes first in the player section. The original 240
-    values and the first 60 PPO-plus values remain unchanged. The final 289
-    values make bankruptcy, jail progress, turn/auction order, and all pending
-    trade terms observable.
+    values remain unchanged; the final 60 compactly expose phase, turn, debt,
+    auction, bankruptcy, jail, and actionable trade context.
     """
     state = np.zeros(STATE_DIM, dtype=np.float32)
     idx = 0
@@ -196,31 +194,6 @@ def build_state_vector(players, properties_dict, agent_id: int, env=None) -> np.
     state[idx + 1] = getattr(env, "hotels_available", 0) / 12.0
     idx += 2
 
-    state[idx] = min(getattr(env, "debt_amount", 0) / 2000.0, 1.0)
-    idx += 1
-
-    creditor = getattr(env, "debt_creditor", None)
-    state[idx if creditor is None else idx + 1 + order.index(creditor)] = 1.0
-    idx += NUM_PLAYERS + 1
-
-    auction_property = getattr(env, "auction_property_id", None)
-    auction_slot = 0 if auction_property is None else 1 + PROPERTY_IDS.index(auction_property)
-    state[idx + auction_slot] = 1.0
-    idx += len(PROPERTY_IDS) + 1
-
-    state[idx] = min(getattr(env, "auction_high_bid", 0) / 2000.0, 1.0)
-    idx += 1
-
-    max_rounds = max(getattr(env, "max_rounds", 1), 1)
-    state[idx] = min(getattr(env, "round", 0) / max_rounds, 1.0)
-    idx += 1
-
-    leader = getattr(env, "auction_high_bidder", None)
-    state[idx if leader is None else idx + 1 + order.index(leader)] = 1.0
-    idx += NUM_PLAYERS + 1
-
-    assert idx == LEGACY_PLUS_STATE_DIM, f"PPO-plus prefix mismatch: {idx}"
-
     for relative_pid, pid in enumerate(order):
         state[idx + relative_pid] = float(players[pid].bankrupt)
     idx += NUM_PLAYERS
@@ -233,8 +206,34 @@ def build_state_vector(players, properties_dict, agent_id: int, env=None) -> np.
 
     if env is not None:
         for turn_slot, pid in enumerate(env.turn_order):
-            state[idx + turn_slot * NUM_PLAYERS + order.index(pid)] = 1.0
-    idx += NUM_PLAYERS * NUM_PLAYERS
+            state[idx + turn_slot] = order.index(pid) / max(NUM_PLAYERS - 1, 1)
+    idx += NUM_PLAYERS
+
+    state[idx] = min(getattr(env, "debt_amount", 0) / 2000.0, 1.0)
+    idx += 1
+
+    creditor = getattr(env, "debt_creditor", None)
+    state[idx if creditor is None else idx + 1 + order.index(creditor)] = 1.0
+    idx += NUM_PLAYERS + 1
+
+    auction_property = getattr(env, "auction_property_id", None)
+    state[idx] = (
+        0.0
+        if auction_property is None
+        else (1 + PROPERTY_IDS.index(auction_property)) / (len(PROPERTY_IDS) + 1)
+    )
+    idx += 1
+
+    state[idx] = min(getattr(env, "auction_high_bid", 0) / 2000.0, 1.0)
+    idx += 1
+
+    max_rounds = max(getattr(env, "max_rounds", 1), 1)
+    state[idx] = min(getattr(env, "round", 0) / max_rounds, 1.0)
+    idx += 1
+
+    leader = getattr(env, "auction_high_bidder", None)
+    state[idx if leader is None else idx + 1 + order.index(leader)] = 1.0
+    idx += NUM_PLAYERS + 1
 
     if env is not None:
         for pid in env.auction_bidders:
@@ -244,35 +243,39 @@ def build_state_vector(players, properties_dict, agent_id: int, env=None) -> np.
     state[idx] = float(bool(env and env.extra_roll_pending))
     idx += 1
 
-    # One fixed-size public trade record per possible sender. Each record is
-    # recipient(5), offered deed(29), requested deed(29), and two cash values.
-    for sender in order:
-        offer = env.pending_trades.get(sender) if env is not None else None
+    incoming = env._incoming_trade(agent_id) if env is not None else None
+    sender = None if incoming is None else incoming.from_player
+    state[idx if sender is None else idx + 1 + order.index(sender)] = 1.0
+    idx += NUM_PLAYERS + 1
 
-        recipient_slot = 0 if offer is None else 1 + order.index(offer.to_player)
-        state[idx + recipient_slot] = 1.0
-        idx += NUM_PLAYERS + 1
+    state[idx] = (
+        0.0
+        if incoming is None or incoming.offered_prop is None
+        else (1 + PROPERTY_IDS.index(incoming.offered_prop.square_id))
+        / (len(PROPERTY_IDS) + 1)
+    )
+    idx += 1
+    state[idx] = (
+        0.0
+        if incoming is None or incoming.requested_prop is None
+        else (1 + PROPERTY_IDS.index(incoming.requested_prop.square_id))
+        / (len(PROPERTY_IDS) + 1)
+    )
+    idx += 1
+    if incoming is not None:
+        state[idx] = min(incoming.cash_offered / 2000.0, 1.0)
+        state[idx + 1] = min(incoming.cash_requested / 2000.0, 1.0)
+    idx += 2
 
-        offered_slot = (
-            0
-            if offer is None or offer.offered_prop is None
-            else 1 + PROPERTY_IDS.index(offer.offered_prop.square_id)
-        )
-        state[idx + offered_slot] = 1.0
-        idx += len(PROPERTY_IDS) + 1
-
-        requested_slot = (
-            0
-            if offer is None or offer.requested_prop is None
-            else 1 + PROPERTY_IDS.index(offer.requested_prop.square_id)
-        )
-        state[idx + requested_slot] = 1.0
-        idx += len(PROPERTY_IDS) + 1
-
-        if offer is not None:
-            state[idx] = min(offer.cash_offered / 2000.0, 1.0)
-            state[idx + 1] = min(offer.cash_requested / 2000.0, 1.0)
-        idx += 2
+    outgoing = env.pending_trades.get(agent_id) if env is not None else None
+    state[idx] = (
+        0.0
+        if outgoing is None
+        else (1 + order.index(outgoing.to_player)) / (NUM_PLAYERS + 1)
+    )
+    idx += 1
+    state[idx] = min(len(getattr(env, "pending_trades", {})) / NUM_PLAYERS, 1.0)
+    idx += 1
 
     assert idx == STATE_DIM, f"State vector size mismatch: {idx}"
     return state

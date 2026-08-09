@@ -759,6 +759,7 @@ class MonopolyEnv:
         player.properties = []
         self._clear_debt(pid)
         self._update_monopolies()
+        self._next_player()
 
     def _settle_debt(self, pid: int):
         if self.debt_player != pid or self.debt_amount <= 0:
