@@ -164,6 +164,7 @@ class PPOAgent:
         self.n_epochs = n_epochs
         self.batch_size = batch_size
         self.win_loss_bonus = win_loss_bonus
+        self.hidden_dim = hidden_dim
         if device.startswith("cuda") and not torch.cuda.is_available():
             raise ValueError("CUDA was requested but is not available")
         self.device = torch.device(
@@ -179,6 +180,7 @@ class PPOAgent:
 
         self.buffer = PPOBuffer()
         self.step_count = 0
+        self.games_trained = 0
 
         # Mask actions permanently handled by fixed policy (hybrid only)
         self.fixed_action_mask = torch.zeros(ACTION_SPACE_SIZE, dtype=torch.bool)
@@ -402,13 +404,27 @@ class PPOAgent:
         temporary = destination.with_name(destination.name + ".tmp")
         torch.save(
             {
-                "format_version": 2,
+                "format_version": 3,
                 "ruleset": RULESET_VERSION,
                 "state_dim": STATE_DIM,
                 "action_dim": ACTION_SPACE_SIZE,
                 "player_id": self.player_id,
                 "hybrid": self.hybrid,
+                "hidden_dim": self.hidden_dim,
                 "step_count": self.step_count,
+                "games_trained": self.games_trained,
+                "training_config": {
+                    "gamma": self.gamma,
+                    "lam": self.lam,
+                    "clip_eps": self.clip_eps,
+                    "entropy_coef": self.entropy_coef,
+                    "value_coef": self.value_coef,
+                    "max_grad_norm": self.max_grad_norm,
+                    "n_steps": self.n_steps,
+                    "n_epochs": self.n_epochs,
+                    "batch_size": self.batch_size,
+                    "win_loss_bonus": self.win_loss_bonus,
+                },
                 "actor": self.actor.state_dict(),
                 "critic": self.critic.state_dict(),
                 "optimizer": self.opt.state_dict(),
@@ -425,12 +441,13 @@ class PPOAgent:
                 f"{RULESET_VERSION}; train a new checkpoint."
             )
         expected = {
-            "format_version": 2,
+            "format_version": 3,
             "ruleset": RULESET_VERSION,
             "state_dim": STATE_DIM,
             "action_dim": ACTION_SPACE_SIZE,
             "player_id": self.player_id,
             "hybrid": self.hybrid,
+            "hidden_dim": self.hidden_dim,
         }
         actual = {key: ckpt.get(key) for key in expected}
         if actual != expected:
@@ -451,4 +468,7 @@ class PPOAgent:
                 for key, value in state.items():
                     if torch.is_tensor(value):
                         state[key] = value.to(self.device)
+        for key, value in ckpt.get("training_config", {}).items():
+            setattr(self, key, value)
         self.step_count = int(ckpt.get("step_count", 0))
+        self.games_trained = int(ckpt.get("games_trained", 0))

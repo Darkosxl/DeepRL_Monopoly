@@ -157,6 +157,7 @@ class PPOAgentTests(unittest.TestCase):
             restored = PPOAgent(0, hybrid=True, device="cpu")
             restored.load(str(path))
             self.assertEqual(restored.step_count, agent.step_count)
+            self.assertEqual(restored.games_trained, agent.games_trained)
             for expected, actual in zip(
                 agent.actor.parameters(), restored.actor.parameters()
             ):

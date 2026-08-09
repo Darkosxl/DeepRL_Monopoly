@@ -37,6 +37,7 @@ def train_ppo(
     checkpoint_path: str | None = None,
     watchdog=None,
     seed: int = 42,
+    resume_path: str | None = None,
     **kwargs,
 ):
     """Train a PPO agent. Set hybrid=True for the hybrid approach."""
@@ -44,6 +45,9 @@ def train_ppo(
     np.random.seed(seed)
     torch.manual_seed(seed)
     agent = PPOAgent(player_id=player_id, hybrid=hybrid, **kwargs)
+    if resume_path is not None:
+        agent.load(resume_path)
+        n_games = max(0, n_games - agent.games_trained)
     history = train(
         agent,
         is_ppo=True,

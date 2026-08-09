@@ -89,6 +89,9 @@ class ClassicCFRTests(unittest.TestCase):
             self.assertEqual(restored.in_progress["decisions"], 2)
             self.assertEqual(restored.games_trained, 0)
 
+            with self.assertRaisesRegex(ValueError, "increase max_decisions"):
+                restored.train_game()
+
     def test_interrupted_game_resumes_same_trajectory(self) -> None:
         class StopAfterTwo:
             def __init__(self):

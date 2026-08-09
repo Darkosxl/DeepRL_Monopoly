@@ -63,6 +63,7 @@ def main():
         help="PyTorch device (default: auto)",
     )
     parser.add_argument("--checkpoint-every", type=int, default=100)
+    parser.add_argument("--resume", action="store_true")
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--stop-rss-gib", type=float, default=3)
     parser.add_argument("--hard-rss-gib", type=float, default=4)
@@ -73,6 +74,10 @@ def main():
     if args.out is None:
         mode = "hybrid" if args.hybrid else "standard"
         args.out = str(ROOT / "artifacts" / "ppo_plus" / f"{args.algo}_{mode}_model.pt")
+    if args.resume and args.algo != "ppo":
+        parser.error("--resume currently supports PPO checkpoints only")
+    if args.resume and not Path(args.out).exists():
+        parser.error(f"resume checkpoint does not exist: {args.out}")
 
     print(f"\n{'=' * 60}")
     print(f"  Algorithm : {args.algo.upper()}")
@@ -100,6 +105,7 @@ def main():
             checkpoint_path=args.out,
             watchdog=watchdog,
             seed=args.seed,
+            resume_path=args.out if args.resume else None,
         )
     else:
         agent, history = train_ddqn(
@@ -112,20 +118,21 @@ def main():
 
     elapsed = time.time() - start
     games_completed = history.get("games_completed", 0)
+    games_this_run = history.get("games_completed_this_run", games_completed)
     peak_rss_gib = watchdog.peak_rss / GIB
     peak_cuda_gib = 0.0
     status = "stopped early" if history.get("stopped_early") else "complete"
     print(f"\nTraining {status} in {elapsed:.1f}s")
     print(f"Games completed: {games_completed}/{args.games}")
-    if games_completed:
-        print(f"Mean wall time: {elapsed / games_completed:.3f}s/game")
+    if games_this_run:
+        print(f"Mean wall time: {elapsed / games_this_run:.3f}s/game")
     print(f"Peak process RSS: {peak_rss_gib:.2f} GiB")
     if getattr(agent, "device", torch.device("cpu")).type == "cuda":
         peak_cuda_gib = torch.cuda.max_memory_allocated() / GIB
         print(f"Peak CUDA memory: {peak_cuda_gib:.2f} GiB")
 
     history["elapsed_seconds"] = elapsed
-    history["seconds_per_game"] = elapsed / games_completed if games_completed else None
+    history["seconds_per_game"] = elapsed / games_this_run if games_this_run else None
     history["peak_rss_gib"] = peak_rss_gib
     history["peak_cuda_gib"] = peak_cuda_gib
 

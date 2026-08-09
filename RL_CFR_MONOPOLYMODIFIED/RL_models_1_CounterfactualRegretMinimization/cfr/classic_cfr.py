@@ -9,7 +9,7 @@ import pickle
 import random
 import sys
 import time
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 
 import numpy as np
@@ -331,6 +331,11 @@ class MonteCarloCFR:
             game = progress["game"]
             decisions = progress["decisions"]
             elapsed_before = progress["elapsed_seconds"]
+            if decisions >= self.config.max_decisions:
+                raise ValueError(
+                    f"Game already reached {decisions} decisions; increase "
+                    "max_decisions before resuming"
+                )
         else:
             game = SharedGame.new(
                 self.config.seed + index, self.config.max_rounds
@@ -510,7 +515,7 @@ def _build_parser() -> argparse.ArgumentParser:
     train.add_argument("--sims-per-action", type=int, default=1)
     train.add_argument("--rollout-horizon", type=int, default=256)
     train.add_argument("--max-rounds", type=int, default=200)
-    train.add_argument("--max-decisions", type=int, default=20_000)
+    train.add_argument("--max-decisions", type=int)
     train.add_argument("--epsilon", type=float, default=0.1)
     train.add_argument("--seed", type=int, default=0)
     train.add_argument(
@@ -542,6 +547,11 @@ def main() -> None:
     checkpoint = Path(args.checkpoint)
     if args.resume and checkpoint.exists():
         model = MonteCarloCFR.load(checkpoint)
+        if args.max_decisions is not None:
+            model.config = replace(
+                model.config,
+                max_decisions=args.max_decisions,
+            )
     else:
         model = MonteCarloCFR(
             CFRConfig(
@@ -549,7 +559,7 @@ def main() -> None:
                 rollout_horizon=args.rollout_horizon,
                 epsilon=args.epsilon,
                 max_rounds=args.max_rounds,
-                max_decisions=args.max_decisions,
+                max_decisions=args.max_decisions or 20_000,
                 seed=args.seed,
             )
         )

@@ -318,8 +318,14 @@ def train(
     print(f"Total games: {n_games}  |  Log every: {log_every}")
     print(f"{'=' * 60}")
 
+    starting_games = int(getattr(learning_agent, "games_trained", 0))
     games_completed = 0
     for game_num in range(1, n_games + 1):
+        absolute_game = starting_games + game_num
+        episode_seed = seed + absolute_game - 1
+        random.seed(episode_seed)
+        np.random.seed(episode_seed)
+        torch.manual_seed(episode_seed)
         if watchdog is not None:
             try:
                 watchdog.check()
@@ -338,11 +344,12 @@ def train(
 
         result = run_episode(env, learning_agent, fp_agents, agent_pid, is_ppo)
         games_completed = game_num
+        learning_agent.games_trained = absolute_game
 
         if (
             checkpoint_path
             and checkpoint_every > 0
-            and game_num % checkpoint_every == 0
+            and absolute_game % checkpoint_every == 0
         ):
             learning_agent.save(checkpoint_path)
 
@@ -364,7 +371,7 @@ def train(
             avg_props = window_props_acquired / window_games
 
             history["win_rates"].append(win_rate)
-            history["games"].append(game_num)
+            history["games"].append(absolute_game)
             history["rewards"].append(result["reward"])
             history["avg_trades_initiated"].append(avg_trades_init)
             history["avg_trades_accepted"].append(avg_trades_acc)
@@ -377,7 +384,7 @@ def train(
                 else ""
             )
             print(
-                f"  Game {game_num:5d} | "
+                f"  Game {absolute_game:5d} | "
                 f"Win%: {win_rate:5.1f}%{eps_str} | "
                 f"Props: {avg_props:.1f} | "
                 f"Trades init/acc/dec: "
@@ -391,7 +398,11 @@ def train(
             window_trades_declined = 0
             window_props_acquired = 0
 
-    history["games_completed"] = games_completed
+    history["resumed_from_games"] = starting_games
+    history["games_completed_this_run"] = games_completed
+    history["games_completed"] = int(
+        getattr(learning_agent, "games_trained", games_completed)
+    )
     return dict(history)
 
 
