@@ -45,10 +45,7 @@ from .env import PHASE_AUCTION, MonopolyEnv, TradeOffer
 
 def _incoming_offer(env: MonopolyEnv, pid: int) -> Optional[TradeOffer]:
     """Return the first pending trade whose recipient is pid, or None."""
-    return next(
-        (o for o in env.pending_trades.values() if o.to_player == pid),
-        None,
-    )
+    return env._incoming_trade(pid)
 
 
 def _buy_trade_action(
@@ -454,7 +451,7 @@ class TheGambler(FixedPolicyAgent):
                 if would_own == len(group):
                     return True
         # Accept if roughly break-even (tolerate up to $50 loss)
-        return -offer.net_worth() >= -50
+        return offer.net_worth() >= -50
 
     def _handle_jail(self, allowed, player):
         if int(ActionType.USE_GOOJ_CARD) in allowed:

@@ -179,6 +179,13 @@ class MonopolyEnv:
             self._advance_turn()
             return self._get_state(self.agent_ids[0]), 0.0, self.done, info
 
+        allowed = self.get_allowed_actions(pid)
+        if action_idx not in allowed:
+            raise ValueError(
+                f"Illegal action {action_idx} for player {pid} during "
+                f"{self.phase}; allowed={allowed}"
+            )
+
         self._apply_action(pid, action_idx, info)
         reward = self._compute_reward(self.agent_ids[0])
         self._check_game_over()
@@ -1030,32 +1037,27 @@ class MonopolyEnv:
                 self.properties[s].is_monopoly = is_mono
 
     def _compute_reward(self, pid: int) -> float:
+        """Bounded net-worth potential used for decision-to-decision shaping."""
+        if self.players[pid].bankrupt:
+            return -1.0
         active = [p for p in self.players if not p.bankrupt]
         if len(active) <= 1:
-            return 1.0 if not self.players[pid].bankrupt else -1.0
+            return 1.0
 
-        nw_self = self.players[pid].net_worth()
-        nw_other = sum(p.net_worth() for p in active if p.player_id != pid)
-
-        base_reward = nw_self / (nw_other + 1e-8)
-
-        # Bonus for each monopoly owned — encourages the agent to complete groups
-        monopoly_bonus = self.players[pid].num_monopolies() * 0.05
-
-        # ── BUG 2 FIX: development bonus ──────────────────────────────────
-        # Building a house costs `house_price` cash but adds the same amount
-        # back to net_worth, so the base_reward ratio barely changes when the
-        # agent builds.  This bonus gives a direct per-step signal proportional
-        # to how developed the agent's monopolies are, making building
-        # genuinely attractive to the policy.
-        total_house_tiers = sum(
-            p.houses
-            for p in self.players[pid].properties
-            if p.is_monopoly and p.is_real_estate
+        own = self.players[pid].net_worth()
+        others = [
+            player.net_worth()
+            for player in active
+            if player.player_id != pid
+        ]
+        mean_other = float(np.mean(others))
+        return float(
+            np.clip(
+                (own - mean_other) / (abs(own) + abs(mean_other) + 1e-9),
+                -1.0,
+                1.0,
+            )
         )
-        development_bonus = total_house_tiers * 0.08
-
-        return base_reward + monopoly_bonus + development_bonus
 
     def _check_game_over(self):
         active = [p for p in self.players if not p.bankrupt]

@@ -166,6 +166,8 @@ class MonopolyRegressionTests(unittest.TestCase):
         self.assertEqual(self.env.debt_amount, 30)
         mortgage = OFFSETS["mortgage"] + PROPERTY_IDS.index(1)
         self.assertIn(mortgage, self.env.get_allowed_actions(0))
+        with self.assertRaisesRegex(ValueError, "Illegal action"):
+            self.env.step(int(ActionType.END_TURN))
         self.env.step(mortgage)
 
         self.assertIsNone(self.env.debt_player)
@@ -276,7 +278,8 @@ class MonopolyRegressionTests(unittest.TestCase):
         improve = OFFSETS["improve_house"] + REAL_ESTATE_IDS.index(1)
 
         self.assertNotIn(improve, self.env.get_allowed_actions(0))
-        self.env.step(improve)
+        with self.assertRaisesRegex(ValueError, "Illegal action"):
+            self.env.step(improve)
 
         self.assertEqual(prop.houses, 0)
         self.assertEqual(self.env.players[0].cash, 1500)

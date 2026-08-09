@@ -72,7 +72,7 @@ def fixed_buy_decision(env, pid: int) -> bool:
 
 
 def fixed_accept_trade_decision(env, pid: int) -> bool:
-    offer = next((o for o in env.pending_trades.values() if o.to_player == pid), None)
+    offer = env._incoming_trade(pid)
     if offer is None:
         return False
 
@@ -90,7 +90,7 @@ def fixed_accept_trade_decision(env, pid: int) -> bool:
                 return True
 
     nwo = offer.net_worth()
-    return -nwo >= 0
+    return nwo >= 0
 
 
 # ── Experience buffer ─────────────────────────────────────────────────────────
@@ -149,7 +149,7 @@ class PPOAgent:
         n_epochs: int = 4,
         batch_size: int = 64,
         hidden_dim: int = 256,
-        win_loss_bonus: float = 0.0,
+        win_loss_bonus: float = 1.0,
         device: str = "auto",
     ):
         self.player_id = player_id

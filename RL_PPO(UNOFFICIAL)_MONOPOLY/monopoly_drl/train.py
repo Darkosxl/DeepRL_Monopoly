@@ -72,8 +72,16 @@ def run_episode(
     agents_map = {fp.player_id: fp for fp in fp_agents}
     agents_map[agent_pid] = learning_agent
 
-    prev_state = state
-    prev_action = None
+    pending_transition = None
+
+    def potential_delta(start: float) -> float:
+        return float(
+            np.clip(
+                env._compute_reward(agent_pid) - start,
+                -REWARD_CLIP,
+                REWARD_CLIP,
+            )
+        )
 
     max_steps = env.max_rounds * NUM_PLAYERS * 30
     step_count = 0
@@ -93,11 +101,50 @@ def run_episode(
         if pid == agent_pid:
             # ── Learning agent ────────────────────────────────────────────
             if is_ppo:
-                # FIX 1 & 2: unpack 4-tuple; nn_allowed is the mask to store
                 action, log_prob, value, nn_allowed = learning_agent.choose_action(
                     state, env, allowed
                 )
+
+                # A neural transition spans opponent and hybrid-policy actions
+                # until the next state where the actor is actually consulted.
+                if log_prob is not None and pending_transition is not None:
+                    reward = potential_delta(pending_transition[4])
+                    total_reward += reward
+                    if update_online:
+                        learning_agent.store(
+                            pending_transition[0],
+                            pending_transition[1],
+                            pending_transition[2],
+                            reward,
+                            pending_transition[3],
+                            False,
+                            pending_transition[5],
+                        )
+                        if len(learning_agent.buffer) >= learning_agent.n_steps:
+                            update_stats = learning_agent.update(
+                                last_next_state=state,
+                                last_done=False,
+                            )
+                            # The sampled action used the pre-update actor.
+                            # Resample so the next rollout begins on-policy.
+                            action, log_prob, value, nn_allowed = (
+                                learning_agent.choose_action(state, env, allowed)
+                            )
+                    pending_transition = None
             else:
+                if pending_transition is not None:
+                    reward = potential_delta(pending_transition[2])
+                    total_reward += reward
+                    if update_online:
+                        learning_agent.store_transition(
+                            pending_transition[0],
+                            pending_transition[1],
+                            reward,
+                            state,
+                            False,
+                        )
+                        update_stats = learning_agent.update()
+                    pending_transition = None
                 action = learning_agent.choose_action(state, env, allowed)
                 log_prob, value, nn_allowed = 0.0, 0.0, allowed
 
@@ -128,10 +175,9 @@ def run_episode(
             elif is_trade_offer:
                 trades_initiated += 1
 
-            next_state, reward, done, info = env.step(action)
-
-            # FIX 5: clip reward before storing or accumulating
-            reward = float(np.clip(reward, -REWARD_CLIP, REWARD_CLIP))
+            transition_state = state.copy()
+            potential_before = env._compute_reward(agent_pid)
+            next_state, _, done, info = env.step(action)
 
             # Detect property gained via accepted trade
             new_prop_count = len(env.players[agent_pid].properties)
@@ -139,40 +185,23 @@ def run_episode(
                 properties_acquired += new_prop_count - prev_prop_count
             prev_prop_count = new_prop_count
 
-            total_reward += reward
             steps += 1
 
-            if update_online:
-                if is_ppo:
-                    # FIX 1: only store transitions chosen by the neural net
-                    # (log_prob is None when the hybrid fixed policy fired)
-                    if log_prob is not None:
-                        # FIX 2: pass nn_allowed so the buffer stores the mask
-                        learning_agent.store(
-                            prev_state,
-                            action,
-                            log_prob,
-                            reward,
-                            value,
-                            done,
-                            nn_allowed,
-                        )
-
-                    if len(learning_agent.buffer) >= learning_agent.n_steps:
-                        # FIX 3: pass next_state + done for correct bootstrap
-                        update_stats = learning_agent.update(
-                            last_next_state=next_state,
-                            last_done=done,
-                        )
-                else:
-                    if prev_action is not None:
-                        learning_agent.store_transition(
-                            prev_state, prev_action, reward, next_state, done
-                        )
-                    update_stats = learning_agent.update()
-
-            prev_state = next_state
-            prev_action = action
+            if is_ppo and log_prob is not None:
+                pending_transition = (
+                    transition_state,
+                    action,
+                    log_prob,
+                    value,
+                    potential_before,
+                    nn_allowed,
+                )
+            elif not is_ppo:
+                pending_transition = (
+                    transition_state,
+                    action,
+                    potential_before,
+                )
             state = next_state
 
         else:
@@ -193,24 +222,42 @@ def run_episode(
     winner = env.winner()
     won = winner == agent_pid
 
+    if pending_transition is not None:
+        reward = potential_delta(
+            pending_transition[4] if is_ppo else pending_transition[2]
+        )
+        total_reward += reward
+        if update_online and is_ppo:
+            learning_agent.store(
+                pending_transition[0],
+                pending_transition[1],
+                pending_transition[2],
+                reward,
+                pending_transition[3],
+                True,
+                pending_transition[5],
+            )
+        elif update_online:
+            learning_agent.store_transition(
+                pending_transition[0],
+                pending_transition[1],
+                reward,
+                state,
+                True,
+            )
+
     if update_online:
+        learning_agent.add_win_loss(won)
+        total_reward += getattr(learning_agent, "win_loss_bonus", 0.0) * (
+            1 if won else -1
+        )
         if is_ppo:
-            learning_agent.add_win_loss(won)
             if len(learning_agent.buffer) > 0:
-                # FIX 3: terminal boundary → last_done=True, bootstrap=0
                 update_stats.update(
                     learning_agent.update(last_next_state=state, last_done=True)
                 )
         else:
-            learning_agent.add_win_loss(won)
-            if prev_action is not None:
-                learning_agent.store_transition(
-                    prev_state,
-                    prev_action,
-                    learning_agent.win_loss_bonus * (1 if won else -1),
-                    state,
-                    True,
-                )
+            update_stats = learning_agent.update()
 
     return {
         "won": won,
