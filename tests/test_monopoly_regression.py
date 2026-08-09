@@ -43,7 +43,11 @@ class MonopolyRegressionTests(unittest.TestCase):
 
     def test_public_dimensions(self) -> None:
         self.assertEqual(ACTION_SPACE_SIZE, 2958)
-        self.assertEqual(self.env._get_state(0).shape, (240,))
+        state = self.env._get_state(0)
+        self.assertEqual(state.shape, (300,))
+        self.assertEqual(float(state[240:244].sum()), 1.0)
+        self.assertEqual(float(state[244:248].sum()), 1.0)
+        self.assertEqual(float(state[248:252].sum()), 1.0)
 
     def test_turn_sequence_and_property_purchase(self) -> None:
         self.assertEqual(

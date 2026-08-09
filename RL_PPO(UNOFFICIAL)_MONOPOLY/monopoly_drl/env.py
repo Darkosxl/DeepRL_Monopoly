@@ -989,7 +989,7 @@ class MonopolyEnv:
             self.done = True
 
     def _get_state(self, pid: int) -> np.ndarray:
-        return build_state_vector(self.players, self.properties, pid)
+        return build_state_vector(self.players, self.properties, pid, self)
 
     def winner(self) -> Optional[int]:
         active = [p for p in self.players if not p.bankrupt]

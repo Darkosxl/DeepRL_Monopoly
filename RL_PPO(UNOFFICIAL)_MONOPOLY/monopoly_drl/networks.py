@@ -1,6 +1,6 @@
 """
 Neural network architectures for PPO (actor-critic) and DDQN agents.
-State dim = 240, Action dim = ACTION_SPACE_SIZE
+State dim = STATE_DIM, Action dim = ACTION_SPACE_SIZE
 
 Fix 4 applied
 ─────────────
@@ -31,8 +31,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from .actions import ACTION_SPACE_SIZE
-
-STATE_DIM = 240
+from .state import STATE_DIM
 
 
 def _mlp_block(in_dim: int, out_dim: int) -> nn.Sequential:

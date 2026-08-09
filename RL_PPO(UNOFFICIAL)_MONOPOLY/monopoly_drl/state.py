@@ -1,6 +1,5 @@
 """
-Game State: Player and Property data structures, plus the 240-dim state vector
-as described in the paper (Section IV-A).
+Game State: player/property data plus a 300-value PPO-plus observation.
 """
 
 import numpy as np
@@ -14,6 +13,11 @@ from .constants import (
     REAL_ESTATE_IDS,
     STARTING_CASH,
 )
+
+
+BASE_STATE_DIM = 240
+STATE_DIM = 300
+PHASES = ("pre_roll", "post_roll", "out_of_turn", "auction")
 
 
 class Property:
@@ -113,9 +117,9 @@ class Player:
 # ── State Vector Construction ──────────────────────────────────────────────────
 
 
-def build_state_vector(players, properties_dict, agent_id: int) -> np.ndarray:
+def build_state_vector(players, properties_dict, agent_id: int, env=None) -> np.ndarray:
     """
-    Build the 240-dimensional state vector for the learning agent.
+    Build the PPO-plus observation for the learning agent.
 
     Layout (as in paper Section IV-A):
       - Player representation  : 4 players × 4 features = 16 dims
@@ -123,9 +127,10 @@ def build_state_vector(players, properties_dict, agent_id: int) -> np.ndarray:
       - Property representation: 28 properties × 8 features = 224 dims
           [owner_onehot(5), mortgaged, is_monopoly, improvement_fraction]
 
-    The agent's own player comes first in the player section.
+    The agent's own player comes first in the player section. The original 240
+    values remain unchanged; the final 60 expose the PPO-plus rule context.
     """
-    state = np.zeros(240, dtype=np.float32)
+    state = np.zeros(STATE_DIM, dtype=np.float32)
     idx = 0
 
     # ── Player features (16 dims) ──
@@ -158,5 +163,57 @@ def build_state_vector(players, properties_dict, agent_id: int) -> np.ndarray:
             state[idx] = prop.houses / 5.0  # 5 = hotel
         idx += 1
 
-    assert idx == 240, f"State vector size mismatch: {idx}"
+    assert idx == BASE_STATE_DIM, f"Base state vector size mismatch: {idx}"
+
+    order = [agent_id] + [i for i in range(NUM_PLAYERS) if i != agent_id]
+
+    if env is not None and env.phase in PHASES:
+        state[idx + PHASES.index(env.phase)] = 1.0
+    idx += len(PHASES)
+
+    if env is not None:
+        state[idx + order.index(env.whose_turn())] = 1.0
+    idx += NUM_PLAYERS
+
+    if env is not None:
+        state[idx + order.index(env.active_player_id())] = 1.0
+    idx += NUM_PLAYERS
+
+    state[idx] = float(bool(env and env.has_rolled))
+    idx += 1
+    state[idx] = min(getattr(env, "consecutive_doubles", 0) / 3.0, 1.0)
+    idx += 1
+
+    dice = getattr(env, "last_dice", (0, 0))
+    state[idx : idx + 2] = [die / 6.0 for die in dice]
+    idx += 2
+
+    state[idx] = getattr(env, "houses_available", 0) / 32.0
+    state[idx + 1] = getattr(env, "hotels_available", 0) / 12.0
+    idx += 2
+
+    state[idx] = min(getattr(env, "debt_amount", 0) / 2000.0, 1.0)
+    idx += 1
+
+    creditor = getattr(env, "debt_creditor", None)
+    state[idx if creditor is None else idx + 1 + order.index(creditor)] = 1.0
+    idx += NUM_PLAYERS + 1
+
+    auction_property = getattr(env, "auction_property_id", None)
+    auction_slot = 0 if auction_property is None else 1 + PROPERTY_IDS.index(auction_property)
+    state[idx + auction_slot] = 1.0
+    idx += len(PROPERTY_IDS) + 1
+
+    state[idx] = min(getattr(env, "auction_high_bid", 0) / 2000.0, 1.0)
+    idx += 1
+
+    max_rounds = max(getattr(env, "max_rounds", 1), 1)
+    state[idx] = min(getattr(env, "round", 0) / max_rounds, 1.0)
+    idx += 1
+
+    leader = getattr(env, "auction_high_bidder", None)
+    state[idx if leader is None else idx + 1 + order.index(leader)] = 1.0
+    idx += NUM_PLAYERS + 1
+
+    assert idx == STATE_DIM, f"State vector size mismatch: {idx}"
     return state
