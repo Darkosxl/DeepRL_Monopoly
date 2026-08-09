@@ -19,8 +19,7 @@ Changes:
     PPOAgent will get an identical result; callers that passed hidden_dim=512
     will now get a wider-but-still-shallow network which is fine.
 
-The DDQNNetwork receives the same treatment: same depth reduction and
-LayerNorm insertion.
+DDQN uses the paper's separate 1024→512 ReLU architecture.
 """
 
 import random
@@ -122,40 +121,24 @@ class CriticNetwork(nn.Module):
 
 class DDQNNetwork(nn.Module):
     """
-    Double DQN network with dueling architecture.
+    Double DQN Q-network from Appendix B-B of the paper.
 
-    Shared feature extractor (FIX 4 – shallower + LayerNorm):
-        STATE_DIM → [256 → LN → ReLU] × 3
-    Value stream    : 256 → 128 → 1
-    Advantage stream: 256 → 128 → ACTION_SPACE_SIZE
+    Architecture:
+        STATE_DIM → 1024 → ReLU → 512 → ReLU → ACTION_SPACE_SIZE
     """
 
-    def __init__(self, hidden_dim: int = 256):
+    def __init__(self, hidden_dim: int = 1024):
         super().__init__()
-        self.feature = nn.Sequential(
-            _mlp_block(STATE_DIM, hidden_dim),
-            _mlp_block(hidden_dim, hidden_dim),
-            _mlp_block(hidden_dim, hidden_dim),
-        )
-        self.value_stream = nn.Sequential(
-            nn.Linear(hidden_dim, hidden_dim // 2),
-            nn.LayerNorm(hidden_dim // 2),
+        self.net = nn.Sequential(
+            nn.Linear(STATE_DIM, hidden_dim),
             nn.ReLU(),
-            nn.Linear(hidden_dim // 2, 1),
-        )
-        self.adv_stream = nn.Sequential(
             nn.Linear(hidden_dim, hidden_dim // 2),
-            nn.LayerNorm(hidden_dim // 2),
             nn.ReLU(),
             nn.Linear(hidden_dim // 2, ACTION_SPACE_SIZE),
         )
 
     def forward(self, state: torch.Tensor) -> torch.Tensor:
-        feat = self.feature(state)
-        value = self.value_stream(feat)
-        adv = self.adv_stream(feat)
-        # Dueling: Q = V + (A - mean(A))
-        return value + (adv - adv.mean(dim=-1, keepdim=True))
+        return self.net(state)
 
     def get_action(
         self, state: np.ndarray, allowed_actions: list, epsilon: float = 0.0

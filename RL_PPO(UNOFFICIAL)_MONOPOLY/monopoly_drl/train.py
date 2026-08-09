@@ -134,7 +134,10 @@ def run_episode(
                             )
                     pending_transition = None
             else:
-                if pending_transition is not None:
+                action, nn_allowed = learning_agent.choose_training_action(
+                    state, env, allowed
+                )
+                if nn_allowed is not None and pending_transition is not None:
                     reward = potential_delta(pending_transition[2])
                     total_reward += reward
                     if update_online:
@@ -144,11 +147,11 @@ def run_episode(
                             reward,
                             state,
                             False,
+                            nn_allowed,
                         )
                         update_stats = learning_agent.update()
                     pending_transition = None
-                action = learning_agent.choose_action(state, env, allowed)
-                log_prob, value, nn_allowed = 0.0, 0.0, allowed
+                log_prob, value = 0.0, 0.0
 
             if action not in allowed:
                 raise ValueError(
@@ -198,7 +201,7 @@ def run_episode(
                     potential_before,
                     nn_allowed,
                 )
-            elif not is_ppo:
+            elif not is_ppo and nn_allowed is not None:
                 pending_transition = (
                     transition_state,
                     action,
@@ -241,26 +244,34 @@ def run_episode(
                 pending_transition[5],
             )
         elif update_online:
+            reward += getattr(learning_agent, "win_loss_bonus", 0.0) * (
+                1 if won else -1
+            )
+            total_reward += getattr(learning_agent, "win_loss_bonus", 0.0) * (
+                1 if won else -1
+            )
             learning_agent.store_transition(
                 pending_transition[0],
                 pending_transition[1],
                 reward,
                 state,
                 True,
+                (),
             )
 
     if update_online:
-        learning_agent.add_win_loss(won)
-        total_reward += getattr(learning_agent, "win_loss_bonus", 0.0) * (
-            1 if won else -1
-        )
         if is_ppo:
+            learning_agent.add_win_loss(won)
+            total_reward += getattr(learning_agent, "win_loss_bonus", 0.0) * (
+                1 if won else -1
+            )
             if len(learning_agent.buffer) > 0:
                 update_stats.update(
                     learning_agent.update(last_next_state=state, last_done=True)
                 )
         else:
             update_stats = learning_agent.update()
+            learning_agent.finish_episode()
 
     return {
         "won": won,

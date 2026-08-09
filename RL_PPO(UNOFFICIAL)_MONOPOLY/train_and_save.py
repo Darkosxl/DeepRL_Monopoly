@@ -1,8 +1,8 @@
 """
 train_and_save.py
 -----------------
-Trains a Hybrid PPO agent (the best performing model from the paper)
-against the three fixed-policy opponents and saves the model weights.
+Trains a hybrid PPO or DDQN agent against the three fixed-policy opponents
+and saves a resumable model checkpoint.
 
 Usage:
     python train_and_save.py                        # default 2000 games
@@ -74,8 +74,6 @@ def main():
     if args.out is None:
         mode = "hybrid" if args.hybrid else "standard"
         args.out = str(ROOT / "artifacts" / "ppo_plus" / f"{args.algo}_{mode}_model.pt")
-    if args.resume and args.algo != "ppo":
-        parser.error("--resume currently supports PPO checkpoints only")
     if args.resume and not Path(args.out).exists():
         parser.error(f"resume checkpoint does not exist: {args.out}")
 
@@ -113,7 +111,12 @@ def main():
             player_id=0,
             n_games=args.games,
             log_every=max(1, args.games // 50),
+            device=args.device,
+            checkpoint_every=args.checkpoint_every,
+            checkpoint_path=args.out,
+            watchdog=watchdog,
             seed=args.seed,
+            resume_path=args.out if args.resume else None,
         )
 
     elapsed = time.time() - start

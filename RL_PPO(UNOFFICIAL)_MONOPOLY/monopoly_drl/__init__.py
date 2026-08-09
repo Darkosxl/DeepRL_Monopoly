@@ -67,7 +67,11 @@ def train_ddqn(
     player_id: int = 0,
     n_games: int = 10_000,
     log_every: int = 100,
+    checkpoint_every: int = 0,
+    checkpoint_path: str | None = None,
+    watchdog=None,
     seed: int = 42,
+    resume_path: str | None = None,
     **kwargs,
 ):
     """Train a DDQN agent. Set hybrid=True for the hybrid approach."""
@@ -75,12 +79,18 @@ def train_ddqn(
     np.random.seed(seed)
     torch.manual_seed(seed)
     agent = DDQNAgent(player_id=player_id, hybrid=hybrid, **kwargs)
+    if resume_path is not None:
+        agent.load(resume_path)
+        n_games = max(0, n_games - agent.games_trained)
     history = train(
         agent,
         is_ppo=False,
         hybrid=hybrid,
         n_games=n_games,
         log_every=log_every,
+        checkpoint_every=checkpoint_every,
+        checkpoint_path=checkpoint_path,
+        watchdog=watchdog,
         seed=seed,
     )
     return agent, history
