@@ -4,12 +4,12 @@ State dim = STATE_DIM, Action dim = ACTION_SPACE_SIZE
 
 Fix 4 applied
 ─────────────
-The original 6-layer (240→512→512→512→512→256→out) architecture caused
+The original 6-layer network caused
 vanishing gradients: with plain ReLU and no normalisation the early layers
 received near-zero gradients throughout training.
 
 Changes:
-  - Depth reduced to 3 hidden layers (240 → 256 → 256 → 256 → out).
+  - Depth reduced to 3 hidden layers.
   - nn.LayerNorm added after every hidden activation.  LayerNorm is
     preferred over BatchNorm here because rollout batch sizes can be small
     and variable; LayerNorm operates per-sample and is unaffected by batch
@@ -48,7 +48,7 @@ class ActorNetwork(nn.Module):
     PPO Actor: maps state → action log-probability distribution.
 
     Architecture (FIX 4 – shallower + LayerNorm):
-        240 → [256 → LN → ReLU] × 3 → ACTION_SPACE_SIZE
+        STATE_DIM → [256 → LN → ReLU] × 3 → ACTION_SPACE_SIZE
     """
 
     def __init__(self, hidden_dim: int = 256):
@@ -82,10 +82,11 @@ class ActorNetwork(nn.Module):
         if not np.isfinite(state).all():
             raise ValueError("ActorNetwork.get_action() received a non-finite state")
 
-        state_t = torch.FloatTensor(state).unsqueeze(0)
-        mask = torch.zeros(1, ACTION_SPACE_SIZE, dtype=torch.bool)
+        device = next(self.parameters()).device
+        state_t = torch.as_tensor(state, dtype=torch.float32, device=device).unsqueeze(0)
+        mask = torch.zeros(1, ACTION_SPACE_SIZE, dtype=torch.bool, device=device)
         mask[0, allowed_actions] = True
-        with torch.no_grad():
+        with torch.inference_mode():
             log_probs = self.forward(state_t, mask)
         probs = log_probs.exp().squeeze(0)
         if not torch.isfinite(probs).all() or (probs < 0).any() or probs.sum() <= 0:
@@ -103,7 +104,7 @@ class CriticNetwork(nn.Module):
     PPO Critic: maps state → scalar value estimate V(s).
 
     Architecture (FIX 4 – shallower + LayerNorm):
-        240 → [256 → LN → ReLU] × 3 → 1
+        STATE_DIM → [256 → LN → ReLU] × 3 → 1
     """
 
     def __init__(self, hidden_dim: int = 256):
@@ -124,7 +125,7 @@ class DDQNNetwork(nn.Module):
     Double DQN network with dueling architecture.
 
     Shared feature extractor (FIX 4 – shallower + LayerNorm):
-        240 → [256 → LN → ReLU] × 3
+        STATE_DIM → [256 → LN → ReLU] × 3
     Value stream    : 256 → 128 → 1
     Advantage stream: 256 → 128 → ACTION_SPACE_SIZE
     """
@@ -162,10 +163,13 @@ class DDQNNetwork(nn.Module):
         """ε-greedy action selection with action masking."""
         if random.random() < epsilon:
             return random.choice(allowed_actions)
-        state_t = torch.FloatTensor(state).unsqueeze(0)
-        with torch.no_grad():
+        device = next(self.parameters()).device
+        state_t = torch.as_tensor(state, dtype=torch.float32, device=device).unsqueeze(0)
+        with torch.inference_mode():
             q_values = self.forward(state_t).squeeze(0)
-        mask = torch.full((ACTION_SPACE_SIZE,), float("-inf"))
+        mask = torch.full(
+            (ACTION_SPACE_SIZE,), float("-inf"), device=device
+        )
         mask[allowed_actions] = 0.0
         q_masked = q_values + mask
         return q_masked.argmax().item()

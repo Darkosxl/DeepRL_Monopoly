@@ -13,8 +13,8 @@ Usage:
 
 import argparse
 import json
-import os
 import time
+from pathlib import Path
 
 from monopoly_drl import train_ddqn, train_ppo
 
@@ -48,17 +48,25 @@ def main():
     parser.add_argument(
         "--out", type=str, default=None, help="Output path for saved model weights"
     )
+    parser.add_argument(
+        "--device",
+        choices=["auto", "cpu", "cuda"],
+        default="auto",
+        help="PyTorch device (default: auto)",
+    )
     args = parser.parse_args()
 
     # Default output filename
     if args.out is None:
         mode = "hybrid" if args.hybrid else "standard"
-        args.out = f"{args.algo}_{mode}_model.pt"
+        root = Path(__file__).resolve().parents[1]
+        args.out = str(root / "artifacts" / "ppo_plus" / f"{args.algo}_{mode}_model.pt")
 
     print(f"\n{'=' * 60}")
     print(f"  Algorithm : {args.algo.upper()}")
     print(f"  Mode      : {'Hybrid' if args.hybrid else 'Standard'}")
     print(f"  Games     : {args.games}")
+    print(f"  Device    : {args.device}")
     print(f"  Save to   : {args.out}")
     print(f"{'=' * 60}\n")
 
@@ -70,6 +78,7 @@ def main():
             player_id=0,
             n_games=args.games,
             log_every=max(1, args.games // 50),
+            device=args.device,
         )
     else:
         agent, history = train_ddqn(
@@ -87,7 +96,7 @@ def main():
     print(f"Model saved to: {args.out}")
 
     # Save training history
-    history_path = args.out.replace(".pt", "_history.json")
+    history_path = str(Path(args.out).with_suffix("")) + "_history.json"
     with open(history_path, "w") as f:
         json.dump(history, f, indent=2)
     print(f"Training history saved to: {history_path}")

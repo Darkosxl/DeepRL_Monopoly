@@ -28,6 +28,7 @@ Bug 3 – Proper GAE bootstrap for mid-game rollout boundaries.
 """
 
 from typing import List, Optional
+from pathlib import Path
 
 import numpy as np
 import torch
@@ -40,9 +41,11 @@ from .constants import (
     JAIL_BAIL,
     NUM_PLAYERS,
     PROPERTY_IDS,
+    RULESET_VERSION,
     TRADE_CASH_LEVELS,
 )
 from .networks import ActorNetwork, CriticNetwork
+from .state import STATE_DIM
 
 # ── Hybrid fixed-policy decisions ─────────────────────────────────────────────
 
@@ -146,6 +149,7 @@ class PPOAgent:
         batch_size: int = 64,
         hidden_dim: int = 256,
         win_loss_bonus: float = 0.0,
+        device: str = "auto",
     ):
         self.player_id = player_id
         self.hybrid = hybrid
@@ -159,9 +163,13 @@ class PPOAgent:
         self.n_epochs = n_epochs
         self.batch_size = batch_size
         self.win_loss_bonus = win_loss_bonus
+        self.device = torch.device(
+            "cuda" if device == "auto" and torch.cuda.is_available() else
+            "cpu" if device == "auto" else device
+        )
 
-        self.actor = ActorNetwork(hidden_dim)
-        self.critic = CriticNetwork(hidden_dim)
+        self.actor = ActorNetwork(hidden_dim).to(self.device)
+        self.critic = CriticNetwork(hidden_dim).to(self.device)
         self.opt = optim.Adam(
             list(self.actor.parameters()) + list(self.critic.parameters()), lr=lr
         )
@@ -213,8 +221,11 @@ class PPOAgent:
         if not nn_allowed:
             nn_allowed = [int(ActionType.DO_NOTHING)]
 
-        state_t = torch.FloatTensor(state).unsqueeze(0)
-        value = self.critic(state_t).item()
+        state_t = torch.as_tensor(
+            state, dtype=torch.float32, device=self.device
+        ).unsqueeze(0)
+        with torch.inference_mode():
+            value = self.critic(state_t).item()
         action, log_prob = self.actor.get_action(state, nn_allowed)
 
         return action, log_prob, value, nn_allowed  # FIX 2: return nn_allowed
@@ -263,25 +274,35 @@ class PPOAgent:
 
         # FIX 3: bootstrap value for the end of the rollout
         if last_next_state is not None and not last_done:
-            with torch.no_grad():
-                st = torch.FloatTensor(last_next_state).unsqueeze(0)
+            with torch.inference_mode():
+                st = torch.as_tensor(
+                    last_next_state, dtype=torch.float32, device=self.device
+                ).unsqueeze(0)
                 bootstrap_value = self.critic(st).item()
         else:
             bootstrap_value = 0.0
 
         # Convert to tensors
-        states = torch.FloatTensor(np.array(self.buffer.states))
-        actions = torch.LongTensor(self.buffer.actions)
-        old_lps = torch.FloatTensor(self.buffer.log_probs)
+        states = torch.as_tensor(
+            np.array(self.buffer.states), dtype=torch.float32, device=self.device
+        )
+        actions = torch.as_tensor(
+            self.buffer.actions, dtype=torch.long, device=self.device
+        )
+        old_lps = torch.as_tensor(
+            self.buffer.log_probs, dtype=torch.float32, device=self.device
+        )
         rewards = self.buffer.rewards
         values = self.buffer.values
         dones = self.buffer.dones
         # FIX 2: per-step masks stacked into (N, ACTION_SPACE_SIZE)
-        step_masks = torch.stack(self.buffer.action_masks)
+        step_masks = torch.stack(self.buffer.action_masks).to(self.device)
 
         # FIX 3: pass bootstrap value into GAE
         advantages = self._compute_gae(rewards, values, dones, bootstrap_value)
-        returns = advantages + torch.FloatTensor(values)
+        returns = advantages + torch.as_tensor(
+            values, dtype=torch.float32, device=self.device
+        )
         if len(advantages) > 1:
             advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
         else:
@@ -291,7 +312,7 @@ class PPOAgent:
         n_batches = 0
 
         for _ in range(self.n_epochs):
-            indices = torch.randperm(len(states))
+            indices = torch.randperm(len(states), device=self.device)
             for start in range(0, len(states), self.batch_size):
                 idx = indices[start : start + self.batch_size]
                 if len(idx) < 2:
@@ -359,7 +380,7 @@ class PPOAgent:
         the critic's evaluation of the state that followed the last stored
         step, preventing the advantage from being truncated to zero.
         """
-        advantages = torch.zeros(len(rewards))
+        advantages = torch.zeros(len(rewards), device=self.device)
         gae = 0.0
         for t in reversed(range(len(rewards))):
             if t + 1 < len(values):
@@ -373,12 +394,45 @@ class PPOAgent:
         return advantages
 
     def save(self, path: str):
+        Path(path).parent.mkdir(parents=True, exist_ok=True)
         torch.save(
-            {"actor": self.actor.state_dict(), "critic": self.critic.state_dict()},
+            {
+                "format_version": 2,
+                "ruleset": RULESET_VERSION,
+                "state_dim": STATE_DIM,
+                "action_dim": ACTION_SPACE_SIZE,
+                "player_id": self.player_id,
+                "hybrid": self.hybrid,
+                "step_count": self.step_count,
+                "actor": self.actor.state_dict(),
+                "critic": self.critic.state_dict(),
+                "optimizer": self.opt.state_dict(),
+            },
             path,
         )
 
     def load(self, path: str):
-        ckpt = torch.load(path, map_location="cpu")
-        self.actor.load_state_dict(ckpt["actor"])
-        self.critic.load_state_dict(ckpt["critic"])
+        ckpt = torch.load(path, map_location=self.device, weights_only=True)
+        if ckpt.get("state_dim") not in (None, STATE_DIM) or ckpt.get(
+            "action_dim"
+        ) not in (None, ACTION_SPACE_SIZE):
+            raise ValueError(
+                f"Checkpoint dimensions {ckpt.get('state_dim')}x"
+                f"{ckpt.get('action_dim')} do not match {STATE_DIM}x"
+                f"{ACTION_SPACE_SIZE} ({RULESET_VERSION})."
+            )
+        try:
+            self.actor.load_state_dict(ckpt["actor"])
+            self.critic.load_state_dict(ckpt["critic"])
+        except RuntimeError as exc:
+            raise ValueError(
+                "Legacy PPO checkpoint is incompatible with ppo-plus-v1; "
+                "train a new checkpoint."
+            ) from exc
+        if "optimizer" in ckpt:
+            self.opt.load_state_dict(ckpt["optimizer"])
+            for state in self.opt.state.values():
+                for key, value in state.items():
+                    if torch.is_tensor(value):
+                        state[key] = value.to(self.device)
+        self.step_count = int(ckpt.get("step_count", 0))
