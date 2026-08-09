@@ -1,0 +1,59 @@
+{
+  "action_dim": 2958,
+  "gate": {
+    "full_games": 100,
+    "max_latency_p95_s": 2.0,
+    "min_wilson_lower": 0.4,
+    "min_win_rate": 0.5,
+    "screen_games": 20,
+    "screen_win_rate": 0.45
+  },
+  "max_rounds": 200,
+  "players": 4,
+  "resources": {
+    "hard_rss_gib": 4.0,
+    "min_available_ram_gib": 2.0,
+    "min_free_disk_gib": 20.0,
+    "reserved_vram_gib": 1.0,
+    "soft_rss_gib": 3.0
+  },
+  "ruleset": "ppo-plus-v2",
+  "search": {
+    "c_puct": 1.5,
+    "dirichlet_alpha": 0.3,
+    "dirichlet_epsilon": 0.25,
+    "max_depth": 256,
+    "max_width": 64,
+    "simulations": 128,
+    "temperature_rounds": 40,
+    "visit_temperature": 1.0,
+    "widening_base": 8,
+    "widening_scale": 4.0
+  },
+  "seeds": {
+    "bootstrap": 100000,
+    "gate": 9100000,
+    "ladder": 3100000,
+    "promotion": 2100000,
+    "self_play": 1100000,
+    "span": 1000000,
+    "teacher": 4100000
+  },
+  "state_dim": 300,
+  "training": {
+    "batch_size": 256,
+    "bootstrap_games": 256,
+    "games_per_generation": 32,
+    "gradient_clip": 1.0,
+    "learning_rate": 0.0003,
+    "promoted_snapshot_limit": 8,
+    "promotion_games": 120,
+    "promotion_wilson_lower": 0.45,
+    "promotion_win_rate": 0.55,
+    "replay_capacity": 100000,
+    "updates_per_generation": 1000,
+    "value_updates": 2000,
+    "weight_decay": 0.0001,
+    "workers": 4
+  }
+}

@@ -1,0 +1,14 @@
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.test-runtime/
+runs/
+replay/
+checkpoints/
+reports/*.tmp
+teacher-data/
+colab/*.tar.gz
+colab/*.bundle
+releases/*.tmp
+
