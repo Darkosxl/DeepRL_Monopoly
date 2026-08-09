@@ -259,7 +259,12 @@ class MonteCarloCFR:
         }
 
     def train_game(
-        self, game_index: int | None = None, watchdog: MemoryWatchdog | None = None
+        self,
+        game_index: int | None = None,
+        watchdog: MemoryWatchdog | None = None,
+        progress_every: int = 0,
+        checkpoint_every_decisions: int = 0,
+        checkpoint_path: str | Path | None = None,
     ) -> dict:
         index = self.games_trained if game_index is None else game_index
         game = SharedGame.new(
@@ -271,9 +276,27 @@ class MonteCarloCFR:
         while not game.env.done and decisions < self.config.max_decisions:
             if watchdog is not None:
                 watchdog.check()
-            action, _ = self.optimize(game, index, decisions)
+            action, details = self.optimize(game, index, decisions)
             game.step(action)
             decisions += 1
+            if progress_every > 0 and decisions % progress_every == 0:
+                print(
+                    {
+                        "game": index,
+                        "round": game.env.round,
+                        "decisions": decisions,
+                        "legal_actions": int(details["actions"]),
+                        "infosets": sum(len(table) for table in self.tables),
+                        "seconds": time.perf_counter() - started,
+                    },
+                    flush=True,
+                )
+            if (
+                checkpoint_path is not None
+                and checkpoint_every_decisions > 0
+                and decisions % checkpoint_every_decisions == 0
+            ):
+                self.save(checkpoint_path)
 
         self.games_trained = max(self.games_trained, index + 1)
         return {
@@ -366,6 +389,8 @@ def _build_parser() -> argparse.ArgumentParser:
     train.add_argument("--stop-rss-gib", type=float, default=3)
     train.add_argument("--hard-rss-gib", type=float, default=4)
     train.add_argument("--min-available-gib", type=float, default=2)
+    train.add_argument("--progress-every", type=int, default=10)
+    train.add_argument("--checkpoint-every-decisions", type=int, default=100)
 
     play = subparsers.add_parser("play")
     play.add_argument("checkpoint")
@@ -404,7 +429,12 @@ def main() -> None:
     )
     for _ in range(args.games):
         try:
-            stats = model.train_game(watchdog=watchdog)
+            stats = model.train_game(
+                watchdog=watchdog,
+                progress_every=args.progress_every,
+                checkpoint_every_decisions=args.checkpoint_every_decisions,
+                checkpoint_path=checkpoint,
+            )
         except MemoryLimitReached as exc:
             emergency = checkpoint.with_name(
                 f"{checkpoint.stem}_emergency{checkpoint.suffix}"
@@ -412,6 +442,10 @@ def main() -> None:
             model.save(emergency)
             print(f"Memory watchdog stopped training: {exc}")
             print(f"Emergency checkpoint: {emergency}")
+            return
+        except KeyboardInterrupt:
+            model.save(checkpoint)
+            print(f"Interrupted; partial regret tables saved to: {checkpoint}")
             return
         model.save(checkpoint)
         stats["peak_rss_gib"] = watchdog.peak_rss / GIB

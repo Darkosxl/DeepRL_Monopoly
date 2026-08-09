@@ -62,6 +62,21 @@ class ClassicCFRTests(unittest.TestCase):
             [len(table) for table in model.tables],
         )
 
+    def test_train_game_writes_decision_checkpoint(self) -> None:
+        model = MonteCarloCFR(
+            CFRConfig(rollout_horizon=1, max_rounds=1, max_decisions=2)
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "partial.pkl.gz"
+            model.train_game(
+                checkpoint_every_decisions=1,
+                checkpoint_path=path,
+            )
+
+            self.assertTrue(path.exists())
+            restored = MonteCarloCFR.load(path)
+            self.assertGreater(sum(map(len, restored.tables)), 0)
+
 
 if __name__ == "__main__":
     unittest.main()

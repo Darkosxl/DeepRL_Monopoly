@@ -96,6 +96,8 @@ CFR keeps four separate regret/average-strategy tables and evaluates every
 currently legal action at each visited decision. It samples chance and uses
 finite rollouts because the full Monopoly game tree is intractable; therefore
 this is Monte Carlo CFR, not an exact full-tree equilibrium computation. CFR
+reports progress every 10 decisions and atomically saves partial regret tables
+every 100 decisions by default. An interrupted run also saves its tables. CFR
 checkpoints use Python pickle and should only be loaded from trusted sources.
 
 Play games from the learned average CFR policy:
