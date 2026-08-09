@@ -14,6 +14,11 @@ Quick start
 >>> results = evaluate_agent(agent, is_ppo=True, n_games=2000)
 """
 
+import random
+
+import numpy as np
+import torch
+
 from .env          import MonopolyEnv
 from .agent_ppo    import PPOAgent
 from .agent_ddqn   import DDQNAgent
@@ -31,9 +36,13 @@ def train_ppo(
     checkpoint_every: int = 0,
     checkpoint_path: str | None = None,
     watchdog=None,
+    seed: int = 42,
     **kwargs,
 ):
     """Train a PPO agent. Set hybrid=True for the hybrid approach."""
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
     agent = PPOAgent(player_id=player_id, hybrid=hybrid, **kwargs)
     history = train(
         agent,
@@ -44,6 +53,7 @@ def train_ppo(
         checkpoint_every=checkpoint_every,
         checkpoint_path=checkpoint_path,
         watchdog=watchdog,
+        seed=seed,
     )
     return agent, history
 
@@ -53,11 +63,22 @@ def train_ddqn(
     player_id: int = 0,
     n_games: int = 10_000,
     log_every: int = 100,
+    seed: int = 42,
     **kwargs,
 ):
     """Train a DDQN agent. Set hybrid=True for the hybrid approach."""
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
     agent = DDQNAgent(player_id=player_id, hybrid=hybrid, **kwargs)
-    history = train(agent, is_ppo=False, hybrid=hybrid, n_games=n_games, log_every=log_every)
+    history = train(
+        agent,
+        is_ppo=False,
+        hybrid=hybrid,
+        n_games=n_games,
+        log_every=log_every,
+        seed=seed,
+    )
     return agent, history
 
 

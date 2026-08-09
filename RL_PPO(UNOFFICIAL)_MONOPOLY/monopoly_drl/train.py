@@ -29,6 +29,7 @@ from pathlib import Path
 from typing import Dict, List
 
 import numpy as np
+import torch
 
 from .actions import ActionType
 from .agents_fixed import FixedPolicyAgent, FPAgentA, FPAgentB, FPAgentC
@@ -427,6 +428,7 @@ def evaluate(
     for run in range(n_runs):
         random.seed(seed + run)
         np.random.seed(seed + run)
+        torch.manual_seed(seed + run)
         wins = 0
         run_ti = run_ta = run_td = run_pa = 0
         for _ in range(n_games):

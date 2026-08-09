@@ -63,6 +63,7 @@ def main():
         help="PyTorch device (default: auto)",
     )
     parser.add_argument("--checkpoint-every", type=int, default=100)
+    parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--stop-rss-gib", type=float, default=3)
     parser.add_argument("--hard-rss-gib", type=float, default=4)
     parser.add_argument("--min-available-gib", type=float, default=2)
@@ -98,6 +99,7 @@ def main():
             checkpoint_every=args.checkpoint_every,
             checkpoint_path=args.out,
             watchdog=watchdog,
+            seed=args.seed,
         )
     else:
         agent, history = train_ddqn(
@@ -105,6 +107,7 @@ def main():
             player_id=0,
             n_games=args.games,
             log_every=max(1, args.games // 50),
+            seed=args.seed,
         )
 
     elapsed = time.time() - start
