@@ -500,6 +500,7 @@ def rollout_value(
     policy: Callable[[MonopolyEnv, int], int],
     seed: int,
     horizon: int = 256,
+    watchdog=None,
 ) -> float:
     simulation = copy.deepcopy(env)
     random.seed(seed)
@@ -509,6 +510,8 @@ def rollout_value(
     simulation.step(first_action)
     decisions = 1
     while not simulation.done and decisions < horizon:
+        if watchdog is not None:
+            watchdog.check()
         pid = simulation.whose_turn()
         legal = simulation.get_allowed_actions(pid)
         action = policy(simulation, pid)
@@ -528,9 +531,13 @@ def score_candidates(
     policy: Callable[[MonopolyEnv, int], int],
     seeds: Sequence[int],
     horizon: int = 256,
+    watchdog=None,
 ) -> dict[int, list[float]]:
     return {
-        action: [rollout_value(env, action, actor_pid, policy, seed, horizon) for seed in seeds]
+        action: [
+            rollout_value(env, action, actor_pid, policy, seed, horizon, watchdog)
+            for seed in seeds
+        ]
         for action in candidates
     }
 
@@ -602,6 +609,7 @@ def collect_relabelled_game(
     rollout_horizon: int = 256,
     candidate_limit: int = 16,
     min_margin: float = 0.05,
+    watchdog=None,
 ) -> tuple[list[dict], dict]:
     """Collect non-forced teacher states and relabel them with CRN rollouts."""
     random.seed(seed)
@@ -618,6 +626,8 @@ def collect_relabelled_game(
     seen_states = set()
     max_decisions = env.max_rounds * NUM_PLAYERS * 30
     for step in range(max_decisions):
+        if watchdog is not None:
+            watchdog.check()
         if env.done:
             break
         pid = env.whose_turn()
@@ -646,6 +656,7 @@ def collect_relabelled_game(
                     rollout_policy,
                     rollout_seeds,
                     rollout_horizon,
+                    watchdog,
                 )
                 relabeled_action, margin = best_relabel(scores, min_margin)
                 if relabeled_action is not None:
@@ -831,19 +842,23 @@ def train_teacher_block(
         opponents = scripted_opponents(episode_seed, agent.player_id)
         result = run_episode(env, agent, opponents, agent.player_id, is_ppo=True)
         agent.games_trained = game
-        history.append({"game": game, **result})
+        history.append({
+            "game": game,
+            "opponents": [type(opponent).__name__ for opponent in opponents],
+            **result,
+        })
         if game % checkpoint_every == 0:
             agent.save(str(checkpoint_path))
     agent.save(str(checkpoint_path))
     return history
 
 
-def _play_policy_game(
+def play_policy_game(
     env: MonopolyEnv,
     teacher_pid: int,
     teacher_policy: Callable[[MonopolyEnv, int], int],
     opponents,
-) -> int:
+) -> dict:
     env.reset()
     opponent_map = {agent.player_id: agent for agent in opponents}
     max_decisions = env.max_rounds * NUM_PLAYERS * 30
@@ -858,7 +873,7 @@ def _play_policy_game(
             else opponent_map[pid].choose_action(env)
         )
         env.step(action if action in legal else fallback_action(legal))
-    return env.winner()
+    return {"winner": env.winner(), "finished": env.done}
 
 
 def wilson_interval(wins: int, games: int, z: float = 1.959963984540054) -> tuple[float, float]:
@@ -871,24 +886,32 @@ def wilson_interval(wins: int, games: int, z: float = 1.959963984540054) -> tupl
     return center - radius, center + radius
 
 
-def evaluate_teacher(agent, games: int = 600, seed: int = 90_000) -> dict:
+def evaluate_teacher(agent, games: int = 600, seed: int = 90_000, watchdog=None) -> dict:
     wins = 0
     records = []
     for index in range(games):
+        if watchdog is not None:
+            watchdog.check()
         game_seed = seed + index
         teacher_pid = index % NUM_PLAYERS
         random.seed(game_seed)
         np.random.seed(game_seed)
         env = MonopolyEnv(agent_ids=[teacher_pid], max_rounds=200)
         opponents = scripted_opponents(game_seed, teacher_pid)
-        winner = _play_policy_game(
+        game = play_policy_game(
             env,
             teacher_pid,
             lambda state, pid: deterministic_ppo_action(agent, state, pid)[0],
             opponents,
         )
+        winner = game["winner"]
         wins += winner == teacher_pid
-        records.append({"seed": game_seed, "seat": teacher_pid, "winner": winner})
+        records.append({
+            "seed": game_seed,
+            "seat": teacher_pid,
+            "opponents": [type(opponent).__name__ for opponent in opponents],
+            "winner": winner,
+        })
     low, high = wilson_interval(wins, games)
     return {
         "games": games,
@@ -961,6 +984,7 @@ __all__ = [
     "canonical_state", "collect_relabelled_game", "deterministic_ppo_action", "evaluate_teacher",
     "fallback_action", "file_sha256", "grouped_legal_actions", "make_dataset_row",
     "object_to_action", "parse_action_json", "parse_or_fallback", "play_model_game",
+    "play_policy_game",
     "rollout_value", "score_candidates", "scripted_opponents", "seat_names",
     "seat_order", "serialize_decision", "sha256_text", "shortlist_actions",
     "split_by_game", "tokenize_rows", "train_teacher_block", "validate_dataset_row",
