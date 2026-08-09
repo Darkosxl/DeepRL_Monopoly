@@ -211,7 +211,7 @@ class MonopolyEnv:
 
         # ── OUT-OF-TURN phase: non-active players ──────────────────────────
         if self.phase == PHASE_OUT_OF_TURN:
-            if pid != active:
+            if pid == self.current_out_of_turn_player():
                 allowed.append(int(ActionType.END_TURN))  # skip out-of-turn
                 # Can respond to incoming trade
                 pending = self._incoming_trade(pid)
@@ -221,6 +221,7 @@ class MonopolyEnv:
                 # Can make trade offers
                 allowed += self._trade_offer_actions(pid)
                 return allowed if allowed else [int(ActionType.END_TURN)]
+            return [int(ActionType.DO_NOTHING)]
 
         # ── PRE-ROLL phase: active player before rolling ───────────────────
         if self.phase == PHASE_PRE_ROLL and pid == active:
@@ -339,7 +340,7 @@ class MonopolyEnv:
 
             elif atype == ActionType.DECLINE_TRADE:
                 # Remove the offer directed at this player
-                for sid in list(self.pending_trades):
+                for sid in sorted(self.pending_trades):
                     if self.pending_trades[sid].to_player == pid:
                         del self.pending_trades[sid]
                         break
@@ -776,7 +777,8 @@ class MonopolyEnv:
     def _do_accept_trade(self, pid: int):
         offer = None
         sender = None
-        for sid, o in list(self.pending_trades.items()):
+        for sid in sorted(self.pending_trades):
+            o = self.pending_trades[sid]
             if o.to_player == pid:
                 offer = o
                 sender = sid
@@ -952,7 +954,16 @@ class MonopolyEnv:
         allowed = []
         player = self.players[pid]
         all_others = [i for i in range(NUM_PLAYERS) if i != pid]
-        targets = [target for target in all_others if not self.players[target].bankrupt]
+        if self.phase == PHASE_OUT_OF_TURN:
+            current = self.out_of_turn_pids.index(pid)
+            future_responders = set(self.out_of_turn_pids[current + 1 :])
+        else:
+            future_responders = set(all_others)
+        targets = [
+            target
+            for target in all_others
+            if target in future_responders and not self.players[target].bankrupt
+        ]
         stride = len(PROPERTY_IDS) * len(TRADE_CASH_LEVELS)
 
         for target_pid in targets:
@@ -1003,7 +1014,8 @@ class MonopolyEnv:
         return allowed
 
     def _incoming_trade(self, pid: int) -> Optional[TradeOffer]:
-        for o in self.pending_trades.values():
+        for sender in sorted(self.pending_trades):
+            o = self.pending_trades[sender]
             if o.to_player == pid:
                 return o
         return None
