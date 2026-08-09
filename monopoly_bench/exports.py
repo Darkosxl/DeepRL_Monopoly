@@ -103,11 +103,17 @@ def collect_teacher_game(
                 game_id=str(game_id),
                 seed=seed,
                 step=step,
+                teacher_policy="mcts",
+                teacher_candidates={
+                    candidate: {"score": float(values[actor])}
+                    for candidate, values in result.q_values.items()
+                },
                 teacher_action=action,
+                behavior_action=action,
+                exploratory=False,
                 relabeled_action=action,
-                rollout_scores={candidate: list(values) for candidate, values in result.q_values.items()},
                 outcome="pending",
-                teacher_checkpoint_hash=model_hash,
+                teacher_bundle_hash=model_hash,
             )
             row.update(
                 {

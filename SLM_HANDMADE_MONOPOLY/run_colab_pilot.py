@@ -23,8 +23,20 @@ except ImportError:  # pragma: no cover - launcher host normally has psutil
 
 ROOT = Path(__file__).resolve().parents[1]
 NOTEBOOK = Path(__file__).with_name("Gemma4_12B_Monopoly_QLoRA.ipynb")
+RUN_NAME = "asu_pilot_v1"
+REMOTE_RUN_ROOT = f"/content/{RUN_NAME}"
+ARTIFACT_ROOT = ROOT / "artifacts" / "gemma4_monopoly_colab" / RUN_NAME
 STAGES = ("teacher", "collect", "train", "eval")
-STAGE_TIMEOUT_HOURS = {"teacher": 14, "collect": 20, "train": 12, "eval": 20}
+STAGE_TIMEOUT_HOURS = {"teacher": 1, "collect": 20, "train": 12, "eval": 20}
+PIPELINE_FILES = (
+    NOTEBOOK,
+    Path(__file__),
+    ROOT / "SLM_HANDMADE_MONOPOLY" / "monopoly_qlora.py",
+    ROOT / "ASU_FROZEN_TEACHER" / "__init__.py",
+    ROOT / "ASU_FROZEN_TEACHER" / "core.py",
+    ROOT / "ASU_FROZEN_TEACHER" / "spec.py",
+    ROOT / "ASU_FROZEN_TEACHER" / "types.py",
+)
 
 
 class GuardFailure(RuntimeError):
@@ -74,7 +86,7 @@ def run_guarded(
 def require_committed_pipeline() -> None:
     subprocess.run(["git", "diff", "--quiet"], cwd=ROOT, check=True)
     subprocess.run(["git", "diff", "--cached", "--quiet"], cwd=ROOT, check=True)
-    for path in (NOTEBOOK, Path(__file__)):
+    for path in PIPELINE_FILES:
         subprocess.run(
             ["git", "ls-files", "--error-unmatch", str(path.relative_to(ROOT))],
             cwd=ROOT,
@@ -134,7 +146,7 @@ def validate_snapshot(path: Path) -> None:
             member.name
             for member in archive.getmembers()
             if (
-                (member.name != "pilot_v1" and not member.name.startswith("pilot_v1/"))
+                (member.name != RUN_NAME and not member.name.startswith(f"{RUN_NAME}/"))
                 or member.name.endswith("/.env")
                 or "/__pycache__/" in member.name
                 or member.name.endswith(".pyc")
@@ -142,7 +154,7 @@ def validate_snapshot(path: Path) -> None:
         ]
     if unsafe:
         raise GuardFailure(f"Unsafe pilot snapshot members: {unsafe[:3]}")
-    if "pilot_v1/manifest.json" not in names:
+    if f"{RUN_NAME}/manifest.json" not in names:
         raise GuardFailure("Pilot snapshot has no manifest.json")
 
 
@@ -154,18 +166,18 @@ def snapshot_run(
     *,
     min_ram_gib: float = 1.0,
 ) -> Path:
-    remote_snapshot = f"/content/pilot_v1_snapshot_{time.time_ns()}.tar.gz"
+    remote_snapshot = f"/content/{RUN_NAME}_snapshot_{time.time_ns()}.tar.gz"
     script = temporary / "snapshot_pilot.py"
     script.write_text(
         "from pathlib import Path\n"
         "import os, tarfile\n"
-        "root = Path('/content/pilot_v1')\n"
+        f"root = Path({REMOTE_RUN_ROOT!r})\n"
         "if not (root / 'manifest.json').exists():\n"
         "    raise RuntimeError('No resumable pilot manifest exists')\n"
         f"target = Path({remote_snapshot!r})\n"
         "temporary = target.with_name(target.name + '.tmp')\n"
         "with tarfile.open(temporary, 'w:gz') as archive:\n"
-        "    archive.add(root, arcname='pilot_v1')\n"
+        f"    archive.add(root, arcname={RUN_NAME!r})\n"
         "os.replace(temporary, target)\n",
         encoding="utf-8",
     )
@@ -175,7 +187,7 @@ def snapshot_run(
         min_ram_gib=min_ram_gib,
         monitor_ram=False,
     )
-    downloaded = artifact_dir / f"pilot_v1_{label}.tar.gz.tmp"
+    downloaded = artifact_dir / f"{RUN_NAME}_{label}.tar.gz.tmp"
     downloaded.unlink(missing_ok=True)
     try:
         run_guarded(
@@ -196,9 +208,9 @@ def snapshot_run(
             )
         except Exception as exc:
             print(f"WARNING: remote snapshot cleanup failed: {exc}", flush=True)
-    stage_snapshot = artifact_dir / f"pilot_v1_{label}.tar.gz"
+    stage_snapshot = artifact_dir / f"{RUN_NAME}_{label}.tar.gz"
     os.replace(downloaded, stage_snapshot)
-    latest = artifact_dir / "pilot_v1_latest.tar.gz"
+    latest = artifact_dir / f"{RUN_NAME}_latest.tar.gz"
     latest_temporary = latest.with_name(latest.name + ".tmp")
     shutil.copy2(stage_snapshot, latest_temporary)
     os.replace(latest_temporary, latest)
@@ -206,14 +218,14 @@ def snapshot_run(
 
 
 def restore_snapshot(session: str, temporary: Path, artifact_dir: Path) -> None:
-    latest = artifact_dir / "pilot_v1_latest.tar.gz"
+    latest = artifact_dir / f"{RUN_NAME}_latest.tar.gz"
     if not latest.exists():
         return
     validate_snapshot(latest)
     run_guarded(
         [
             "colab", "upload", "-s", session,
-            str(latest), "/content/pilot_v1_resume.tar.gz",
+            str(latest), f"/content/{RUN_NAME}_resume.tar.gz",
         ],
         timeout=3700,
     )
@@ -221,7 +233,7 @@ def restore_snapshot(session: str, temporary: Path, artifact_dir: Path) -> None:
     script.write_text(
         "from pathlib import Path\n"
         "import tarfile\n"
-        "snapshot = Path('/content/pilot_v1_resume.tar.gz')\n"
+        f"snapshot = Path('/content/{RUN_NAME}_resume.tar.gz')\n"
         "with tarfile.open(snapshot, 'r:gz') as archive:\n"
         "    archive.extractall('/content', filter='data')\n"
         "snapshot.unlink()\n",
@@ -233,14 +245,14 @@ def restore_snapshot(session: str, temporary: Path, artifact_dir: Path) -> None:
         monitor_ram=False,
     )
     run_guarded(
-        ["colab", "ls", "-s", session, "/content/pilot_v1/manifest.json"],
+        ["colab", "ls", "-s", session, f"{REMOTE_RUN_ROOT}/manifest.json"],
         timeout=5 * 60,
     )
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--session", default="gemma4-monopoly-pilot-v1")
+    parser.add_argument("--session", default="gemma4-monopoly-asu-v1")
     parser.add_argument("--stages", nargs="+", choices=STAGES, default=list(STAGES))
     parser.add_argument("--dry-run", action="store_true")
     return parser.parse_args()
@@ -251,7 +263,7 @@ def main() -> int:
     if shutil.which("colab") is None:
         raise SystemExit("Google Colab CLI is not installed")
     require_committed_pipeline()
-    artifact_dir = ROOT / "artifacts" / "gemma4_monopoly_colab"
+    artifact_dir = ARTIFACT_ROOT
     artifact_dir.mkdir(parents=True, exist_ok=True)
 
     interrupted = False

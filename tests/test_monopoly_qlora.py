@@ -14,13 +14,16 @@ SLM_ROOT = ROOT / "SLM_HANDMADE_MONOPOLY"
 sys.path[:0] = [str(PPO_ROOT), str(SLM_ROOT)]
 
 from monopoly_drl.actions import ACTION_SPACE_SIZE, OFFSETS, PROPERTY_IDS, ActionType  # noqa: E402
-from monopoly_drl.agent_ppo import PPOAgent  # noqa: E402
 from monopoly_drl.env import MonopolyEnv  # noqa: E402
 from monopoly_qlora import (  # noqa: E402
+    SCHEMA_VERSION,
     DecisionFormatError,
     action_to_json,
+    asu_teacher_decision,
+    asu_teacher_hash,
     canonical_prompt,
-    deterministic_ppo_action,
+    collect_teacher_game,
+    exploratory_behavior_action,
     fallback_action,
     make_dataset_row,
     parse_action_json,
@@ -134,7 +137,15 @@ class MonopolyQLoRAContractsTests(unittest.TestCase):
         selected = shortlist_actions(
             legal,
             OFFSETS["mortgage"],
-            {OFFSETS["mortgage"] + 1: 0.9, OFFSETS["sell_prop"]: 0.8},
+            {
+                int(ActionType.END_TURN): 0.0,
+                int(ActionType.ROLL_DICE): 0.0,
+                OFFSETS["mortgage"]: 0.5,
+                OFFSETS["mortgage"] + 1: 0.9,
+                OFFSETS["sell_prop"]: 0.8,
+            },
+            legal,
+            [int(ActionType.ROLL_DICE)],
             limit=4,
         )
         self.assertEqual(selected[0], OFFSETS["mortgage"])
@@ -142,23 +153,69 @@ class MonopolyQLoRAContractsTests(unittest.TestCase):
         self.assertIn(OFFSETS["mortgage"] + 1, selected)
         self.assertLessEqual(len(selected), 4)
 
-    def test_deterministic_hybrid_teacher_keeps_neural_candidate_scores(self) -> None:
+    def test_asu_teacher_returns_legal_scored_candidates(self) -> None:
         self.env.phase = "post_roll"
         self.env.has_rolled = True
         self.env.players[0].position = 1
-        agent = PPOAgent(0, hybrid=True, device="cpu")
-        action, probabilities = deterministic_ppo_action(agent, self.env, 0)
-        self.assertEqual(action, int(ActionType.BUY_PROPERTY))
-        self.assertIn(int(ActionType.BUY_PROPERTY), probabilities)
-        self.assertIn(int(ActionType.END_TURN), probabilities)
+        action, candidates = asu_teacher_decision(self.env, 0)
+        self.assertIn(action, self.env.get_allowed_actions(0))
+        self.assertIn(action, candidates)
+        self.assertLessEqual(len(candidates), 16)
+        self.assertTrue(all("score" in value for value in candidates.values()))
 
-    def test_randomized_teacher_groups_draw_from_all_six_personalities(self) -> None:
+    def test_asu_teacher_hash_covers_collection_config(self) -> None:
+        self.assertEqual(
+            asu_teacher_hash({"exploration_every": 9}),
+            asu_teacher_hash({"exploration_every": 9}),
+        )
+        self.assertNotEqual(
+            asu_teacher_hash({"exploration_every": 9}),
+            asu_teacher_hash({"exploration_every": 10}),
+        )
+
+    def test_seeded_exploration_changes_behavior_but_not_teacher_label(self) -> None:
+        candidates = {
+            1: {"score": 3.0, "eligible": True, "forced": False, "mandatory": False},
+            2: {"score": 2.0, "eligible": True, "forced": False, "mandatory": False},
+            3: {"score": 1.0, "eligible": True, "forced": False, "mandatory": False},
+        }
+        behavior, exploratory = exploratory_behavior_action(
+            1, candidates, seed=5, step=7, every=1, top_k=2
+        )
+        self.assertTrue(exploratory)
+        self.assertIn(behavior, {2, 3})
+        self.assertEqual(candidates[1]["score"], 3.0)
+
+    def test_collection_uses_asu_labels_against_randomized_abc(self) -> None:
+        seed = 21
+        rows, report = collect_teacher_game(
+            env=MonopolyEnv(agent_ids=[1], max_rounds=1),
+            teacher_pid=1,
+            opponents=scripted_opponents(seed, teacher_pid=1),
+            game_id="smoke-21",
+            seed=seed,
+            teacher_bundle_hash=asu_teacher_hash({"exploration_every": 1}),
+            exploration_every=1,
+        )
+        self.assertTrue(report["finished"])
+        self.assertTrue(rows)
+        self.assertEqual(report["teacher_policy"], "asu_value_v1")
+        self.assertGreater(report["exploratory_actions"], 0)
+        self.assertTrue(all(row["teacher_policy"] == "asu_value_v1" for row in rows))
+        self.assertTrue(
+            all(row["relabeled_action"] == row["teacher_action"] for row in rows)
+        )
+        self.assertTrue(all("asu_value_v1" not in row["prompt"] for row in rows))
+        for row in rows:
+            validate_dataset_row(row)
+
+    def test_randomized_opponents_are_exactly_a_b_and_c(self) -> None:
         classes = {
             type(agent)
             for seed in range(20)
             for agent in scripted_opponents(seed, teacher_pid=0)
         }
-        self.assertEqual(len(classes), 6)
+        self.assertEqual({item.__name__ for item in classes}, {"TheHoarder", "TheDealMaker", "TheGambler"})
 
     def test_standalone_model_game_finishes_and_records_fallbacks(self) -> None:
         env = MonopolyEnv(agent_ids=[0], max_rounds=1)
@@ -181,19 +238,43 @@ class MonopolyQLoRAContractsTests(unittest.TestCase):
             game_id="game-1",
             seed=10,
             step=3,
+            teacher_policy="asu_value_v1",
+            teacher_candidates={action: {"score": 1.0}},
             teacher_action=action,
+            behavior_action=action,
+            exploratory=False,
             relabeled_action=action,
-            rollout_scores={action: [0.1, 0.2, 0.3, 0.4]},
             outcome="loss",
-            teacher_checkpoint_hash="a" * 64,
+            teacher_bundle_hash="a" * 64,
         )
         validate_dataset_row(row)
+        self.assertEqual(SCHEMA_VERSION, "monopoly-decision-v2")
+        self.assertEqual(row["schema"], SCHEMA_VERSION)
         self.assertEqual(json.loads(row["completion"])["action"], "mortgage")
         self.assertEqual(row["state_hash"], sha256_text(row["prompt"]))
 
         broken = copy.deepcopy(row)
         broken["completion"] = '{"action":"end_turn"}'
         with self.assertRaisesRegex(ValueError, "relabeled action"):
+            validate_dataset_row(broken)
+
+        broken = copy.deepcopy(row)
+        broken["exploratory"] = True
+        with self.assertRaisesRegex(ValueError, "Exploration flag"):
+            validate_dataset_row(broken)
+
+        broken = copy.deepcopy(row)
+        broken["candidate_scores"][str(action)] = 2.0
+        with self.assertRaisesRegex(ValueError, "mismatched score"):
+            validate_dataset_row(broken)
+
+        broken = copy.deepcopy(row)
+        other_action = next(item for item in row["legal_actions"] if item != action)
+        broken["teacher_candidates"][str(other_action)] = {"score": 0.0}
+        broken["candidate_scores"][str(other_action)] = 0.0
+        broken["relabeled_action"] = other_action
+        broken["completion"] = action_to_json(other_action, self.env, 0)
+        with self.assertRaisesRegex(ValueError, "ASU labels"):
             validate_dataset_row(broken)
 
     def test_split_is_exact_deduplicated_and_has_no_game_leakage(self) -> None:
@@ -228,11 +309,14 @@ class MonopolyQLoRAContractsTests(unittest.TestCase):
             game_id="same-game",
             seed=1,
             step=1,
+            teacher_policy="asu_value_v1",
+            teacher_candidates={action: {"score": 1.0}},
             teacher_action=action,
+            behavior_action=action,
+            exploratory=False,
             relabeled_action=action,
-            rollout_scores={action: [1.0]},
             outcome="win",
-            teacher_checkpoint_hash="b" * 64,
+            teacher_bundle_hash="b" * 64,
         )
         other = copy.deepcopy(row)
         other["prompt"] += " "

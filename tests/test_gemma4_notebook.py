@@ -37,15 +37,14 @@ class Gemma4NotebookTests(unittest.TestCase):
         required = (
             '"model": "unsloth/gemma-4-12b-it"',
             '"max_seq_length": 512',
-            '"teacher_eval_games": 600',
-            '"teacher_min_win_rate": 0.35',
-            'needs_evaluation = agent.games_trained >= next_target',
-            'gate_games + CONFIG["teacher_increment_games"]',
-            'games = next_target - agent.games_trained',
-            '"rollouts_per_action": 4',
-            '"rollout_horizon": 256',
+            '"teacher_policy": "asu_value_v1"',
+            '"exploration_every": 9',
+            '"exploration_top_k": 3',
+            'action, candidates = asu_teacher_decision(',
+            'collect_teacher_game(',
+            '"asu_teacher_hash": ASU_TEACHER_HASH',
             '"candidate_limit": 16',
-            '"relabel_margin": 0.05',
+            '"min_recovery_fraction": 0.25',
             '"train_rows": 2048',
             '"validation_rows": 256',
             '"test_rows": 256',
@@ -64,13 +63,18 @@ class Gemma4NotebookTests(unittest.TestCase):
             'offline["legal_rate"] >= 0.97',
             'offline["exact_rate"] >= 0.65',
             'game_metrics["gemma_win_rate"] >= 0.25',
+            'game_metrics["asu_win_rate"] - 0.10',
         )
         for value in required:
             self.assertIn(value, source)
         self.assertIn('userdata.get("HF_TOKEN")', source)
         self.assertNotIn('os.getenv("HF_TOKEN")', source)
-        self.assertIn('RUN_ROOT = Path("/content/pilot_v1")', source)
+        self.assertIn('RUN_ROOT = Path("/content/asu_pilot_v1")', source)
         self.assertNotIn('drive.mount(', source)
+        self.assertNotIn('from monopoly_drl.agent_ppo import PPOAgent', source)
+        self.assertNotIn('ppo_plus_v2_teacher.pt', source)
+        self.assertNotIn('teacher_checkpoint_hash', source)
+        self.assertNotIn('heuristic_teacher(', source)
 
     def test_launcher_has_hard_guards_secret_free_archive_and_final_cleanup(self) -> None:
         source = RUNNER.read_text(encoding="utf-8")
@@ -88,8 +92,23 @@ class Gemma4NotebookTests(unittest.TestCase):
             'monitor_ram=False',
             'os.killpg(process.pid, signal.SIGTERM)',
             'host_guard(min_ram_gib=min_ram_gib)',
+            'RUN_NAME = "asu_pilot_v1"',
+            '/ "gemma4_monopoly_colab" / RUN_NAME',
+            'ROOT / "SLM_HANDMADE_MONOPOLY" / "monopoly_qlora.py"',
+            'ROOT / "ASU_FROZEN_TEACHER" / "core.py"',
+            'ROOT / "ASU_FROZEN_TEACHER" / "spec.py"',
+            'ROOT / "ASU_FROZEN_TEACHER" / "types.py"',
         ):
             self.assertIn(value, source)
+
+        spec = importlib.util.spec_from_file_location("colab_runner_paths", RUNNER)
+        runner = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(runner)
+        self.assertEqual(runner.ARTIFACT_ROOT.name, "asu_pilot_v1")
+        self.assertTrue(
+            {"monopoly_qlora.py", "core.py", "spec.py", "types.py"}
+            <= {path.name for path in runner.PIPELINE_FILES}
+        )
 
     def test_launcher_rejects_colab_notebooks_with_hidden_cell_errors(self) -> None:
         spec = importlib.util.spec_from_file_location("colab_runner", RUNNER)
@@ -122,18 +141,18 @@ class Gemma4NotebookTests(unittest.TestCase):
             import tarfile
 
             with tarfile.open(safe, "w:gz") as archive:
-                archive.add(payload, arcname="pilot_v1/manifest.json")
+                archive.add(payload, arcname="asu_pilot_v1/manifest.json")
             runner.validate_snapshot(safe)
 
             missing_manifest = Path(directory) / "missing-manifest.tar.gz"
             with tarfile.open(missing_manifest, "w:gz") as archive:
-                archive.add(payload, arcname="pilot_v1/metrics.json")
+                archive.add(payload, arcname="asu_pilot_v1/metrics.json")
             with self.assertRaisesRegex(runner.GuardFailure, "manifest.json"):
                 runner.validate_snapshot(missing_manifest)
 
             unsafe = Path(directory) / "unsafe.tar.gz"
             with tarfile.open(unsafe, "w:gz") as archive:
-                archive.add(payload, arcname="pilot_v1/.env")
+                archive.add(payload, arcname="asu_pilot_v1/.env")
             with self.assertRaisesRegex(runner.GuardFailure, "Unsafe"):
                 runner.validate_snapshot(unsafe)
 

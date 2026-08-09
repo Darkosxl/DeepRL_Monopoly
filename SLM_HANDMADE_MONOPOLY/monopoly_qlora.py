@@ -1,26 +1,32 @@
-"""Shared contracts for the Gemma Monopoly teacher, dataset, and evaluation."""
+"""Shared contracts for Gemma Monopoly ASU-teacher data and evaluation."""
 
 from __future__ import annotations
 
-import copy
 import hashlib
 import json
-import math
 import random
 import sys
 import time
 from collections import defaultdict
+from dataclasses import asdict
 from pathlib import Path
 from typing import Callable, Iterable, Mapping, Sequence
 
 import numpy as np
-import torch
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-PPO_ROOT = PROJECT_ROOT / "RL_PPO(UNOFFICIAL)_MONOPOLY"
-if str(PPO_ROOT) not in sys.path:
-    sys.path.insert(0, str(PPO_ROOT))
+SIMULATOR_ROOT = PROJECT_ROOT / "RL_PPO(UNOFFICIAL)_MONOPOLY"
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+if str(SIMULATOR_ROOT) not in sys.path:
+    sys.path.insert(0, str(SIMULATOR_ROOT))
+
+from ASU_FROZEN_TEACHER import (  # noqa: E402
+    ASU_VALUE_V1,
+    FROZEN_SPEC_HASH,
+    ASUValueV1,
+)
 
 from monopoly_drl.actions import (  # noqa: E402
     ACTION_SPACE_SIZE,
@@ -31,21 +37,17 @@ from monopoly_drl.actions import (  # noqa: E402
     ActionType,
     AuctionAction,
 )
-from monopoly_drl.agent_ppo import (  # noqa: E402
-    fixed_accept_trade_decision,
-    fixed_buy_decision,
-)
-from monopoly_drl.agents_fixed import FP_AGENT_CLASSES  # noqa: E402
+from monopoly_drl.agents_fixed import FPAgentA, FPAgentB, FPAgentC  # noqa: E402
 from monopoly_drl.constants import (  # noqa: E402
     NUM_PLAYERS,
     RULESET_VERSION,
     TRADE_CASH_LEVELS,
 )
 from monopoly_drl.env import MonopolyEnv  # noqa: E402
-from monopoly_drl.train import run_episode  # noqa: E402
 
 
-SCHEMA_VERSION = "monopoly-decision-v1"
+SCHEMA_VERSION = "monopoly-decision-v2"
+ASU_SOURCE_ROOT = PROJECT_ROOT / "ASU_FROZEN_TEACHER"
 PRICE_PCTS = tuple(round(level * 100) for level in TRADE_CASH_LEVELS)
 PROPERTY_ACTIONS = {
     "mortgage": ("mortgage", PROPERTY_IDS),
@@ -80,6 +82,20 @@ def file_sha256(path: str | Path) -> str:
         for block in iter(lambda: handle.read(1024 * 1024), b""):
             digest.update(block)
     return digest.hexdigest()
+
+
+def asu_teacher_hash(config: Mapping | None = None) -> str:
+    """Hash the frozen ASU policy implementation, spec, and collection config."""
+    return sha256_text(canonical_json({
+        "policy": ASU_VALUE_V1,
+        "frozen_spec_hash": FROZEN_SPEC_HASH,
+        "core_sha256": file_sha256(ASU_SOURCE_ROOT / "core.py"),
+        "spec_sha256": file_sha256(ASU_SOURCE_ROOT / "spec.py"),
+        "types_sha256": file_sha256(ASU_SOURCE_ROOT / "types.py"),
+        "init_sha256": file_sha256(ASU_SOURCE_ROOT / "__init__.py"),
+        "ruleset": RULESET_VERSION,
+        "config": dict(config or {}),
+    }))
 
 
 def seat_order(env: MonopolyEnv, actor_pid: int) -> list[int]:
@@ -423,134 +439,101 @@ def canonical_prompt(env: MonopolyEnv, actor_pid: int) -> str:
     return f"{SYSTEM_PROMPT}\n{serialize_decision(env, actor_pid)}"
 
 
-def deterministic_ppo_action(agent, env: MonopolyEnv, actor_pid: int) -> tuple[int, dict[int, float]]:
-    """Argmax PPO decision and legal probabilities, independent of physical seat id."""
-    legal = env.get_allowed_actions(actor_pid)
-    hybrid_action = None
-    if getattr(agent, "hybrid", False):
-        if int(ActionType.BUY_PROPERTY) in legal and fixed_buy_decision(env, actor_pid):
-            hybrid_action = int(ActionType.BUY_PROPERTY)
-        elif int(ActionType.ACCEPT_TRADE) in legal:
-            hybrid_action = (
-                int(ActionType.ACCEPT_TRADE)
-                if fixed_accept_trade_decision(env, actor_pid)
-                else int(ActionType.DECLINE_TRADE)
-            )
-        neural_legal = [action for action in legal if not agent.fixed_action_mask[action]]
-    else:
-        neural_legal = legal
-    if not neural_legal:
-        return hybrid_action, {hybrid_action: 1.0}
-    state = env._get_state(actor_pid)
-    device = next(agent.actor.parameters()).device
-    state_tensor = torch.as_tensor(state, dtype=torch.float32, device=device).unsqueeze(0)
-    mask = torch.zeros((1, ACTION_SPACE_SIZE), dtype=torch.bool, device=device)
-    mask[0, neural_legal] = True
-    with torch.inference_mode():
-        probabilities = agent.actor(state_tensor, mask).exp().squeeze(0)
-    result = {action: float(probabilities[action]) for action in neural_legal}
-    if hybrid_action is not None:
-        result[hybrid_action] = 1.0
-        return hybrid_action, result
-    return max(neural_legal, key=lambda action: (result[action], -action)), result
-
-
 def shortlist_actions(
     legal_actions: Sequence[int],
     teacher_action: int,
-    probabilities: Mapping[int, float],
+    scores: Mapping[int, float],
+    eligible_actions: Sequence[int],
+    mandatory_actions: Sequence[int],
     limit: int = 16,
 ) -> list[int]:
-    if teacher_action not in legal_actions:
-        raise ValueError("Teacher action is not legal")
-    if limit < 1:
-        raise ValueError("Candidate limit must be positive")
     legal = list(dict.fromkeys(int(action) for action in legal_actions))
+    if teacher_action not in legal:
+        raise ValueError("Teacher action must be legal")
+    pool = [int(action) for action in eligible_actions if action in legal]
+    if teacher_action not in pool:
+        pool.insert(0, teacher_action)
     selected = [teacher_action]
-    mandatory = {
-        int(ActionType.ROLL_DICE),
-        int(ActionType.BUY_PROPERTY),
-        int(ActionType.ACCEPT_TRADE),
-        int(ActionType.DECLINE_TRADE),
-        int(ActionType.DECLARE_BANKRUPT),
-        int(AuctionAction.PASS),
-    }
-    selected.extend(action for action in legal if action in mandatory and action not in selected)
+    selected.extend(
+        action
+        for action in dict.fromkeys(int(item) for item in mandatory_actions)
+        if action in pool and action not in selected
+    )
+    if limit < len(selected):
+        raise ValueError("Candidate limit cannot drop a mandatory ASU action")
     by_family: dict[str, list[int]] = defaultdict(list)
-    for action in legal:
+    for action in pool:
         by_family[action_family(action)].append(action)
     for family in sorted(by_family):
-        best = max(
-            by_family[family],
-            key=lambda action: (probabilities.get(action, 0.0), -action),
-        )
+        best = max(by_family[family], key=lambda action: (scores[action], -action))
         if best not in selected:
             selected.append(best)
     remaining = sorted(
-        (action for action in legal if action not in selected),
-        key=lambda action: (-probabilities.get(action, 0.0), action),
+        (action for action in pool if action not in selected),
+        key=lambda action: (-scores[action], action),
     )
     return (selected + remaining)[:limit]
 
 
-def rollout_value(
+def asu_teacher_decision(
     env: MonopolyEnv,
-    first_action: int,
     actor_pid: int,
-    policy: Callable[[MonopolyEnv, int], int],
-    seed: int,
-    horizon: int = 256,
-    watchdog=None,
-) -> float:
-    simulation = copy.deepcopy(env)
-    random.seed(seed)
-    np.random.seed(seed)
-    if first_action not in simulation.get_allowed_actions(actor_pid):
-        raise ValueError(f"Rollout candidate {first_action} is illegal")
-    simulation.step(first_action)
-    decisions = 1
-    while not simulation.done and decisions < horizon:
-        if watchdog is not None:
-            watchdog.check()
-        pid = simulation.whose_turn()
-        legal = simulation.get_allowed_actions(pid)
-        action = policy(simulation, pid)
-        if action not in legal:
-            action = fallback_action(legal)
-        simulation.step(action)
-        decisions += 1
-    if simulation.done:
-        return 1.0 if simulation.winner() == actor_pid else -1.0
-    return simulation._compute_reward(actor_pid)
-
-
-def score_candidates(
-    env: MonopolyEnv,
-    candidates: Sequence[int],
-    actor_pid: int,
-    policy: Callable[[MonopolyEnv, int], int],
-    seeds: Sequence[int],
-    horizon: int = 256,
-    watchdog=None,
-) -> dict[int, list[float]]:
-    return {
-        action: [
-            rollout_value(env, action, actor_pid, policy, seed, horizon, watchdog)
-            for seed in seeds
-        ]
-        for action in candidates
-    }
-
-
-def best_relabel(scores: Mapping[int, Sequence[float]], min_margin: float = 0.05):
-    if not scores:
-        raise ValueError("No rollout scores supplied")
-    ranked = sorted(
-        ((float(np.mean(values)), int(action)) for action, values in scores.items()),
-        key=lambda item: (-item[0], item[1]),
+    candidate_limit: int = 16,
+) -> tuple[int, dict[int, dict]]:
+    """Return ASU's legal action and compact top candidate records."""
+    decision = ASUValueV1(actor_pid).decide(env)
+    legal = env.get_allowed_actions(actor_pid)
+    by_action = {candidate.action: candidate for candidate in decision.candidates}
+    if set(by_action) != set(legal) or decision.selected_action not in legal:
+        raise RuntimeError("ASU decision does not exactly cover the legal action set")
+    scores = {action: float(candidate.score) for action, candidate in by_action.items()}
+    selected = shortlist_actions(
+        legal,
+        decision.selected_action,
+        scores,
+        [candidate.action for candidate in decision.candidates if candidate.eligible],
+        [candidate.action for candidate in decision.candidates if candidate.mandatory],
+        candidate_limit,
     )
-    margin = math.inf if len(ranked) == 1 else ranked[0][0] - ranked[1][0]
-    return (ranked[0][1] if margin >= min_margin else None), margin
+    records = {}
+    for action in selected:
+        record = asdict(by_action[action])
+        record["score"] = scores[action]
+        records[action] = record
+    return int(decision.selected_action), records
+
+
+def exploratory_behavior_action(
+    teacher_action: int,
+    teacher_candidates: Mapping[int, Mapping],
+    *,
+    seed: int,
+    step: int,
+    every: int = 9,
+    top_k: int = 3,
+) -> tuple[int, bool]:
+    """Occasionally execute a safe ASU alternative while retaining ASU's label."""
+    if every < 1 or top_k < 1:
+        raise ValueError("Exploration cadence and top-k must be positive")
+    candidates = {int(action): value for action, value in teacher_candidates.items()}
+    selected = candidates[teacher_action]
+    if selected["forced"] or selected["mandatory"]:
+        return teacher_action, False
+    alternatives = sorted(
+        (
+            action
+            for action, value in candidates.items()
+            if action != teacher_action
+            and value["eligible"]
+            and not value["forced"]
+            and not value["mandatory"]
+        ),
+        key=lambda action: (-float(candidates[action]["score"]), action),
+    )[:top_k]
+    rng = random.Random(seed * 1_000_003 + step)
+    if not alternatives or rng.randrange(every):
+        return teacher_action, False
+    return rng.choice(alternatives), True
 
 
 def make_dataset_row(
@@ -560,15 +543,37 @@ def make_dataset_row(
     game_id: str,
     seed: int,
     step: int,
+    teacher_policy: str,
+    teacher_candidates: Mapping[int, Mapping],
     teacher_action: int,
+    behavior_action: int,
+    exploratory: bool,
     relabeled_action: int,
-    rollout_scores: Mapping[int, Sequence[float]],
     outcome: str,
-    teacher_checkpoint_hash: str,
+    teacher_bundle_hash: str,
 ) -> dict:
     legal = env.get_allowed_actions(actor_pid)
-    if teacher_action not in legal or relabeled_action not in legal:
+    candidates = {int(action): dict(value) for action, value in teacher_candidates.items()}
+    if type(teacher_policy) is not str or not teacher_policy:
+        raise ValueError("Teacher policy must be identified")
+    if any(action not in legal for action in candidates):
+        raise ValueError("Teacher candidates must be legal")
+    if (
+        teacher_action not in legal
+        or behavior_action not in legal
+        or relabeled_action not in legal
+    ):
         raise ValueError("Dataset actions must be legal in the recorded state")
+    if any(action not in candidates for action in (teacher_action, behavior_action, relabeled_action)):
+        raise ValueError("Dataset labels must preserve their teacher candidate scores")
+    if bool(exploratory) != (behavior_action != teacher_action):
+        raise ValueError("Exploration flag and behavior action disagree")
+    if teacher_policy == ASU_VALUE_V1 and relabeled_action != teacher_action:
+        raise ValueError("ASU labels must equal the ASU teacher action")
+    if len(teacher_bundle_hash) != 64 or any(
+        character not in "0123456789abcdef" for character in teacher_bundle_hash
+    ):
+        raise ValueError("Teacher hash must be lowercase SHA-256")
     prompt = canonical_prompt(env, actor_pid)
     completion = action_to_json(relabeled_action, env, actor_pid)
     return {
@@ -583,47 +588,47 @@ def make_dataset_row(
         "action_family": action_family(relabeled_action),
         "prompt": prompt,
         "completion": completion,
+        "teacher_policy": teacher_policy,
         "teacher_action": int(teacher_action),
+        "behavior_action": int(behavior_action),
+        "exploratory": bool(exploratory),
         "relabeled_action": int(relabeled_action),
         "legal_actions": sorted(int(action) for action in legal),
-        "rollout_scores": {
-            str(action): [float(score) for score in values]
-            for action, values in sorted(rollout_scores.items())
+        "teacher_candidates": {
+            str(action): value for action, value in sorted(candidates.items())
+        },
+        "candidate_scores": {
+            str(action): float(value["score"])
+            for action, value in sorted(candidates.items())
         },
         "outcome": outcome,
-        "teacher_checkpoint_hash": teacher_checkpoint_hash,
+        "teacher_bundle_hash": teacher_bundle_hash,
         "state_hash": sha256_text(prompt),
     }
 
 
-def collect_relabelled_game(
+def collect_teacher_game(
     *,
     env: MonopolyEnv,
-    teacher,
     teacher_pid: int,
     opponents,
     game_id: str,
     seed: int,
-    teacher_checkpoint_hash: str,
-    rollouts_per_action: int = 4,
-    rollout_horizon: int = 256,
+    teacher_bundle_hash: str,
     candidate_limit: int = 16,
-    min_margin: float = 0.05,
+    exploration_every: int = 9,
+    exploration_top_k: int = 3,
     watchdog=None,
 ) -> tuple[list[dict], dict]:
-    """Collect non-forced teacher states and relabel them with CRN rollouts."""
+    """Collect non-forced ASU decisions against randomized A/B/C opponents."""
     random.seed(seed)
     np.random.seed(seed)
     env.reset()
     opponent_map = {agent.player_id: agent for agent in opponents}
 
-    def rollout_policy(simulation: MonopolyEnv, pid: int) -> int:
-        if pid == teacher_pid:
-            return deterministic_ppo_action(teacher, simulation, pid)[0]
-        return opponent_map[pid].choose_action(simulation)
-
     rows = []
     seen_states = set()
+    perturbations = 0
     max_decisions = env.max_rounds * NUM_PLAYERS * 30
     for step in range(max_decisions):
         if watchdog is not None:
@@ -636,45 +641,41 @@ def collect_relabelled_game(
             action = opponent_map[pid].choose_action(env)
             env.step(action if action in legal else fallback_action(legal))
             continue
+        if len(legal) == 1:
+            env.step(legal[0])
+            continue
 
-        teacher_action, probabilities = deterministic_ppo_action(teacher, env, pid)
-        if len(legal) > 1:
-            prompt_hash = sha256_text(canonical_prompt(env, pid))
-            if prompt_hash not in seen_states:
-                seen_states.add(prompt_hash)
-                candidates = shortlist_actions(
-                    legal, teacher_action, probabilities, candidate_limit
-                )
-                rollout_seeds = [
-                    seed * 1_000_003 + step * rollouts_per_action + index
-                    for index in range(rollouts_per_action)
-                ]
-                scores = score_candidates(
-                    env,
-                    candidates,
-                    pid,
-                    rollout_policy,
-                    rollout_seeds,
-                    rollout_horizon,
-                    watchdog,
-                )
-                relabeled_action, margin = best_relabel(scores, min_margin)
-                if relabeled_action is not None:
-                    row = make_dataset_row(
-                        env=env,
-                        actor_pid=pid,
-                        game_id=game_id,
-                        seed=seed,
-                        step=step,
-                        teacher_action=teacher_action,
-                        relabeled_action=relabeled_action,
-                        rollout_scores=scores,
-                        outcome="pending",
-                        teacher_checkpoint_hash=teacher_checkpoint_hash,
-                    )
-                    row["rollout_margin"] = margin
-                    rows.append(row)
-        env.step(teacher_action)
+        teacher_action, teacher_candidates = asu_teacher_decision(
+            env, pid, candidate_limit
+        )
+        behavior_action, exploratory = exploratory_behavior_action(
+            teacher_action,
+            teacher_candidates,
+            seed=seed,
+            step=step,
+            every=exploration_every,
+            top_k=exploration_top_k,
+        )
+        perturbations += exploratory
+        prompt_hash = sha256_text(canonical_prompt(env, pid))
+        if prompt_hash not in seen_states:
+            seen_states.add(prompt_hash)
+            rows.append(make_dataset_row(
+                env=env,
+                actor_pid=pid,
+                game_id=game_id,
+                seed=seed,
+                step=step,
+                teacher_policy=ASU_VALUE_V1,
+                teacher_candidates=teacher_candidates,
+                teacher_action=teacher_action,
+                behavior_action=behavior_action,
+                exploratory=exploratory,
+                relabeled_action=teacher_action,
+                outcome="pending",
+                teacher_bundle_hash=teacher_bundle_hash,
+            ))
+        env.step(behavior_action)
 
     winner = env.winner()
     outcome = "win" if winner == teacher_pid else "loss"
@@ -685,10 +686,12 @@ def collect_relabelled_game(
         "game_id": game_id,
         "seed": seed,
         "teacher_seat": teacher_pid,
+        "teacher_policy": ASU_VALUE_V1,
         "winner": winner,
         "outcome": outcome,
         "finished": env.done,
         "retained_rows": len(rows),
+        "exploratory_actions": perturbations,
     }
 
 
@@ -696,19 +699,36 @@ def validate_dataset_row(row: Mapping) -> None:
     required = {
         "schema", "ruleset", "game_id", "seed", "step", "actor_pid",
         "seat_order", "phase",
-        "action_family", "prompt", "completion", "teacher_action",
-        "relabeled_action", "legal_actions", "rollout_scores", "outcome",
-        "teacher_checkpoint_hash", "state_hash",
+        "action_family", "prompt", "completion", "teacher_policy",
+        "teacher_action", "behavior_action", "exploratory",
+        "relabeled_action", "legal_actions",
+        "teacher_candidates", "candidate_scores", "outcome",
+        "teacher_bundle_hash", "state_hash",
     }
     missing = required - set(row)
     if missing:
         raise ValueError(f"Dataset row is missing fields: {sorted(missing)}")
     if row["schema"] != SCHEMA_VERSION or row["ruleset"] != RULESET_VERSION:
         raise ValueError("Dataset schema or ruleset mismatch")
+    if type(row["teacher_policy"]) is not str or not row["teacher_policy"]:
+        raise ValueError("Teacher policy must be identified")
     if row["state_hash"] != sha256_text(row["prompt"]):
         raise ValueError("Dataset state hash mismatch")
     if row["relabeled_action"] not in row["legal_actions"]:
         raise ValueError("Relabeled action is illegal")
+    if row["teacher_action"] not in row["legal_actions"]:
+        raise ValueError("Teacher action is illegal")
+    if row["behavior_action"] not in row["legal_actions"]:
+        raise ValueError("Behavior action is illegal")
+    if bool(row["exploratory"]) != (
+        row["behavior_action"] != row["teacher_action"]
+    ):
+        raise ValueError("Exploration flag and behavior action disagree")
+    if (
+        row["teacher_policy"] == ASU_VALUE_V1
+        and row["relabeled_action"] != row["teacher_action"]
+    ):
+        raise ValueError("ASU labels must equal the ASU teacher action")
     parsed = json.loads(row["completion"])
     if not isinstance(parsed, dict) or parsed.get("action") is None:
         raise ValueError("Completion is not a canonical action object")
@@ -717,9 +737,23 @@ def validate_dataset_row(row: Mapping) -> None:
     completion_action = object_to_action(parsed, validation_env, row["actor_pid"])
     if completion_action != row["relabeled_action"]:
         raise ValueError("Completion does not encode the relabeled action")
-    candidate_ids = {int(action) for action in row["rollout_scores"]}
+    candidate_ids = {int(action) for action in row["candidate_scores"]}
     if row["relabeled_action"] not in candidate_ids:
-        raise ValueError("Relabeled action has no preserved rollout scores")
+        raise ValueError("Relabeled action has no preserved candidate score")
+    if row["teacher_action"] not in candidate_ids:
+        raise ValueError("Teacher action has no preserved candidate score")
+    if row["behavior_action"] not in candidate_ids:
+        raise ValueError("Behavior action has no preserved candidate score")
+    if set(row["teacher_candidates"]) != set(row["candidate_scores"]):
+        raise ValueError("Teacher candidate records and scores disagree")
+    for action, score in row["candidate_scores"].items():
+        if float(row["teacher_candidates"][action]["score"]) != float(score):
+            raise ValueError("Teacher candidate record has a mismatched score")
+    if len(row["teacher_bundle_hash"]) != 64 or any(
+        character not in "0123456789abcdef"
+        for character in row["teacher_bundle_hash"]
+    ):
+        raise ValueError("Teacher hash must be lowercase SHA-256")
 
 
 def _balanced_rows(rows: Iterable[dict]) -> list[dict]:
@@ -813,44 +847,11 @@ def tokenize_rows(rows: Sequence[dict], tokenizer, max_length: int = 512) -> lis
 
 
 def scripted_opponents(seed: int, teacher_pid: int):
-    classes = random.Random(seed).sample(FP_AGENT_CLASSES, NUM_PLAYERS - 1)
+    classes = random.Random(seed).sample(
+        (FPAgentA, FPAgentB, FPAgentC), NUM_PLAYERS - 1
+    )
     seats = [pid for pid in range(NUM_PLAYERS) if pid != teacher_pid]
     return [agent_class(pid) for agent_class, pid in zip(classes, seats)]
-
-
-def train_teacher_block(
-    agent,
-    games: int,
-    *,
-    seed: int,
-    checkpoint_path: str | Path,
-    checkpoint_every: int = 100,
-    watchdog=None,
-) -> list[dict]:
-    """Train PPO against randomized three-of-six scripted groups."""
-    history = []
-    start = int(getattr(agent, "games_trained", 0))
-    env = MonopolyEnv(agent_ids=[agent.player_id], max_rounds=200)
-    for offset in range(1, games + 1):
-        game = start + offset
-        episode_seed = seed + game - 1
-        random.seed(episode_seed)
-        np.random.seed(episode_seed)
-        torch.manual_seed(episode_seed)
-        if watchdog is not None:
-            watchdog.check()
-        opponents = scripted_opponents(episode_seed, agent.player_id)
-        result = run_episode(env, agent, opponents, agent.player_id, is_ppo=True)
-        agent.games_trained = game
-        history.append({
-            "game": game,
-            "opponents": [type(opponent).__name__ for opponent in opponents],
-            **result,
-        })
-        if game % checkpoint_every == 0:
-            agent.save(str(checkpoint_path))
-    agent.save(str(checkpoint_path))
-    return history
 
 
 def play_policy_game(
@@ -874,53 +875,6 @@ def play_policy_game(
         )
         env.step(action if action in legal else fallback_action(legal))
     return {"winner": env.winner(), "finished": env.done}
-
-
-def wilson_interval(wins: int, games: int, z: float = 1.959963984540054) -> tuple[float, float]:
-    if games <= 0:
-        raise ValueError("Wilson interval requires at least one game")
-    p = wins / games
-    denominator = 1 + z * z / games
-    center = (p + z * z / (2 * games)) / denominator
-    radius = z * math.sqrt(p * (1 - p) / games + z * z / (4 * games * games)) / denominator
-    return center - radius, center + radius
-
-
-def evaluate_teacher(agent, games: int = 600, seed: int = 90_000, watchdog=None) -> dict:
-    wins = 0
-    records = []
-    for index in range(games):
-        if watchdog is not None:
-            watchdog.check()
-        game_seed = seed + index
-        teacher_pid = index % NUM_PLAYERS
-        random.seed(game_seed)
-        np.random.seed(game_seed)
-        env = MonopolyEnv(agent_ids=[teacher_pid], max_rounds=200)
-        opponents = scripted_opponents(game_seed, teacher_pid)
-        game = play_policy_game(
-            env,
-            teacher_pid,
-            lambda state, pid: deterministic_ppo_action(agent, state, pid)[0],
-            opponents,
-        )
-        winner = game["winner"]
-        wins += winner == teacher_pid
-        records.append({
-            "seed": game_seed,
-            "seat": teacher_pid,
-            "opponents": [type(opponent).__name__ for opponent in opponents],
-            "winner": winner,
-        })
-    low, high = wilson_interval(wins, games)
-    return {
-        "games": games,
-        "wins": wins,
-        "win_rate": wins / games,
-        "wilson_95": [low, high],
-        "passed": wins / games >= 0.35 and low > 0.25,
-        "records": records,
-    }
 
 
 def play_model_game(
@@ -980,13 +934,12 @@ def play_model_game(
 
 __all__ = [
     "SCHEMA_VERSION", "SYSTEM_PROMPT", "DecisionFormatError", "action_family",
-    "action_to_json", "action_to_object", "best_relabel", "canonical_prompt",
-    "canonical_state", "collect_relabelled_game", "deterministic_ppo_action", "evaluate_teacher",
+    "action_to_json", "action_to_object", "asu_teacher_decision",
+    "asu_teacher_hash", "canonical_prompt", "canonical_state",
+    "collect_teacher_game", "exploratory_behavior_action",
     "fallback_action", "file_sha256", "grouped_legal_actions", "make_dataset_row",
     "object_to_action", "parse_action_json", "parse_or_fallback", "play_model_game",
-    "play_policy_game",
-    "rollout_value", "score_candidates", "scripted_opponents", "seat_names",
+    "play_policy_game", "scripted_opponents", "seat_names",
     "seat_order", "serialize_decision", "sha256_text", "shortlist_actions",
-    "split_by_game", "tokenize_rows", "train_teacher_block", "validate_dataset_row",
-    "validate_splits", "wilson_interval",
+    "split_by_game", "tokenize_rows", "validate_dataset_row", "validate_splits",
 ]
