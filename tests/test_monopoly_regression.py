@@ -25,6 +25,7 @@ from monopoly_drl.env import (  # noqa: E402
     PHASE_OUT_OF_TURN,
     PHASE_POST_ROLL,
     MonopolyEnv,
+    TradeOffer,
 )
 
 
@@ -217,6 +218,91 @@ class MonopolyRegressionTests(unittest.TestCase):
         self.assertEqual(prop.houses, 4)
         self.assertEqual(self.env.houses_available, 28)
         self.assertEqual(self.env.hotels_available, 12)
+
+    def test_trade_target_indices_survive_bankruptcy(self) -> None:
+        self.env.players[1].bankrupt = True
+        self.give_property(1, 2)
+        target_slot = [1, 2, 3].index(2)
+        buy_offer = (
+            OFFSETS["buy_trade"]
+            + target_slot * len(PROPERTY_IDS) * 3
+            + PROPERTY_IDS.index(1) * 3
+        )
+
+        self.assertIn(buy_offer, self.env.get_allowed_actions(0))
+        self.env.step(buy_offer)
+
+        self.assertEqual(self.env.pending_trades[0].to_player, 2)
+        self.assertIs(self.env.pending_trades[0].requested_prop, self.env.properties[1])
+
+    def test_unaffordable_trade_is_rejected_atomically(self) -> None:
+        self.give_property(1, 0)
+        sender = self.env.players[0]
+        recipient = self.env.players[1]
+        recipient.cash = 50
+        self.env.pending_trades[0] = TradeOffer(
+            0,
+            1,
+            offered_prop=self.env.properties[1],
+            cash_requested=100,
+        )
+
+        self.env._do_accept_trade(1)
+
+        self.assertEqual(sender.cash, 1500)
+        self.assertEqual(recipient.cash, 50)
+        self.assertEqual(self.env.properties[1].owner, 0)
+        self.assertIn(self.env.properties[1], sender.properties)
+        self.assertNotIn(self.env.properties[1], recipient.properties)
+
+    def test_sell_property_action_is_legal_only_when_unmortgaged(self) -> None:
+        self.give_property(1, 0)
+        prop = self.env.properties[1]
+        sell = OFFSETS["sell_prop"] + PROPERTY_IDS.index(1)
+
+        self.assertIn(sell, self.env.get_allowed_actions(0))
+        self.env.step(sell)
+
+        self.assertIsNone(prop.owner)
+        self.assertEqual(self.env.players[0].cash, 1530)
+
+        self.give_property(1, 0, mortgaged=True)
+        self.assertNotIn(sell, self.env.get_allowed_actions(0))
+
+    def test_mortgaged_deed_cannot_be_improved(self) -> None:
+        self.give_property(1, 0, mortgaged=True)
+        self.give_property(3, 0)
+        prop = self.env.properties[1]
+        improve = OFFSETS["improve_house"] + REAL_ESTATE_IDS.index(1)
+
+        self.assertNotIn(improve, self.env.get_allowed_actions(0))
+        self.env.step(improve)
+
+        self.assertEqual(prop.houses, 0)
+        self.assertEqual(self.env.players[0].cash, 1500)
+
+    def test_exchange_offer_is_enumerated_after_bankruptcy(self) -> None:
+        self.env.players[1].bankrupt = True
+        self.give_property(1, 0)
+        self.give_property(3, 2)
+        target_slot = [1, 2, 3].index(2)
+        offer_idx = PROPERTY_IDS.index(1)
+        request_idx = PROPERTY_IDS.index(3)
+        request_raw = request_idx if request_idx < offer_idx else request_idx - 1
+        exchange = (
+            OFFSETS["exch_trade"]
+            + target_slot * len(PROPERTY_IDS) * (len(PROPERTY_IDS) - 1)
+            + offer_idx * (len(PROPERTY_IDS) - 1)
+            + request_raw
+        )
+
+        self.assertIn(exchange, self.env.get_allowed_actions(0))
+        self.env.step(exchange)
+
+        offer = self.env.pending_trades[0]
+        self.assertEqual(offer.to_player, 2)
+        self.assertIs(offer.offered_prop, self.env.properties[1])
+        self.assertIs(offer.requested_prop, self.env.properties[3])
 
 
 if __name__ == "__main__":
