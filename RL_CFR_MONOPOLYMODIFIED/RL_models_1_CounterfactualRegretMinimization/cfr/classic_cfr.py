@@ -17,9 +17,12 @@ import numpy as np
 
 ROOT = Path(__file__).resolve().parents[3]
 PPO_ROOT = ROOT / "RL_PPO(UNOFFICIAL)_MONOPOLY"
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 if str(PPO_ROOT) not in sys.path:
     sys.path.insert(0, str(PPO_ROOT))
 
+from training_guard import GIB, MemoryLimitReached, MemoryWatchdog  # noqa: E402
 from monopoly_drl.actions import ACTION_SPACE_SIZE  # noqa: E402
 from monopoly_drl.constants import NUM_PLAYERS, RULESET_VERSION  # noqa: E402
 from monopoly_drl.env import MonopolyEnv  # noqa: E402
@@ -255,7 +258,9 @@ class MonteCarloCFR:
             "max_utility": float(utilities.max()),
         }
 
-    def train_game(self, game_index: int | None = None) -> dict:
+    def train_game(
+        self, game_index: int | None = None, watchdog: MemoryWatchdog | None = None
+    ) -> dict:
         index = self.games_trained if game_index is None else game_index
         game = SharedGame.new(
             self.config.seed + index, self.config.max_rounds
@@ -264,6 +269,8 @@ class MonteCarloCFR:
         decisions = 0
 
         while not game.env.done and decisions < self.config.max_decisions:
+            if watchdog is not None:
+                watchdog.check()
             action, _ = self.optimize(game, index, decisions)
             game.step(action)
             decisions += 1
@@ -356,6 +363,9 @@ def _build_parser() -> argparse.ArgumentParser:
         default=str(ROOT / "artifacts" / "cfr_ppo_plus" / "cfr.pkl.gz"),
     )
     train.add_argument("--resume", action="store_true")
+    train.add_argument("--stop-rss-gib", type=float, default=3)
+    train.add_argument("--hard-rss-gib", type=float, default=4)
+    train.add_argument("--min-available-gib", type=float, default=2)
 
     play = subparsers.add_parser("play")
     play.add_argument("checkpoint")
@@ -387,9 +397,24 @@ def main() -> None:
             )
         )
 
+    watchdog = MemoryWatchdog(
+        stop_rss_gib=args.stop_rss_gib,
+        hard_rss_gib=args.hard_rss_gib,
+        min_available_gib=args.min_available_gib,
+    )
     for _ in range(args.games):
-        stats = model.train_game()
+        try:
+            stats = model.train_game(watchdog=watchdog)
+        except MemoryLimitReached as exc:
+            emergency = checkpoint.with_name(
+                f"{checkpoint.stem}_emergency{checkpoint.suffix}"
+            )
+            model.save(emergency)
+            print(f"Memory watchdog stopped training: {exc}")
+            print(f"Emergency checkpoint: {emergency}")
+            return
         model.save(checkpoint)
+        stats["peak_rss_gib"] = watchdog.peak_rss / GIB
         print(stats, flush=True)
 
 

@@ -28,6 +28,7 @@ Bug 3 – Proper GAE bootstrap for mid-game rollout boundaries.
 """
 
 from typing import List, Optional
+import os
 from pathlib import Path
 
 import numpy as np
@@ -163,6 +164,8 @@ class PPOAgent:
         self.n_epochs = n_epochs
         self.batch_size = batch_size
         self.win_loss_bonus = win_loss_bonus
+        if device.startswith("cuda") and not torch.cuda.is_available():
+            raise ValueError("CUDA was requested but is not available")
         self.device = torch.device(
             "cuda" if device == "auto" and torch.cuda.is_available() else
             "cpu" if device == "auto" else device
@@ -394,7 +397,9 @@ class PPOAgent:
         return advantages
 
     def save(self, path: str):
-        Path(path).parent.mkdir(parents=True, exist_ok=True)
+        destination = Path(path)
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        temporary = destination.with_name(destination.name + ".tmp")
         torch.save(
             {
                 "format_version": 2,
@@ -408,8 +413,9 @@ class PPOAgent:
                 "critic": self.critic.state_dict(),
                 "optimizer": self.opt.state_dict(),
             },
-            path,
+            temporary,
         )
+        os.replace(temporary, destination)
 
     def load(self, path: str):
         ckpt = torch.load(path, map_location=self.device, weights_only=True)

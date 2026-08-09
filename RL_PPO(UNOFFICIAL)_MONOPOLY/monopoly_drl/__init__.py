@@ -28,11 +28,23 @@ def train_ppo(
     player_id: int = 0,
     n_games: int = 2000,
     log_every: int = 100,
+    checkpoint_every: int = 0,
+    checkpoint_path: str | None = None,
+    watchdog=None,
     **kwargs,
 ):
     """Train a PPO agent. Set hybrid=True for the hybrid approach."""
     agent = PPOAgent(player_id=player_id, hybrid=hybrid, **kwargs)
-    history = train(agent, is_ppo=True, hybrid=hybrid, n_games=n_games, log_every=log_every)
+    history = train(
+        agent,
+        is_ppo=True,
+        hybrid=hybrid,
+        n_games=n_games,
+        log_every=log_every,
+        checkpoint_every=checkpoint_every,
+        checkpoint_path=checkpoint_path,
+        watchdog=watchdog,
+    )
     return agent, history
 
 

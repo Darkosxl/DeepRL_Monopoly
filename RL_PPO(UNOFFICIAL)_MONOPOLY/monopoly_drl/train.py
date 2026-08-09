@@ -25,6 +25,7 @@ Fix 5 – reward clipping added. The raw ratio reward is unbounded and
 
 import random
 from collections import defaultdict
+from pathlib import Path
 from typing import Dict, List
 
 import numpy as np
@@ -225,6 +226,9 @@ def train(
     n_games: int = 2000,
     log_every: int = 50,
     seed: int = 42,
+    checkpoint_every: int = 0,
+    checkpoint_path: str | None = None,
+    watchdog=None,
 ) -> Dict:
     """
     Main training function.
@@ -236,7 +240,7 @@ def train(
     np.random.seed(seed)
 
     agent_pid = learning_agent.player_id
-    env = MonopolyEnv(agent_ids=[agent_pid], max_rounds=300)
+    env = MonopolyEnv(agent_ids=[agent_pid], max_rounds=200)
 
     other_pids = [i for i in range(NUM_PLAYERS) if i != agent_pid]
     fp_classes = [FPAgentA, FPAgentB, FPAgentC]
@@ -259,8 +263,33 @@ def train(
     print(f"Total games: {n_games}  |  Log every: {log_every}")
     print(f"{'=' * 60}")
 
+    games_completed = 0
     for game_num in range(1, n_games + 1):
+        if watchdog is not None:
+            try:
+                watchdog.check()
+            except RuntimeError as exc:
+                if checkpoint_path:
+                    path = Path(checkpoint_path)
+                    emergency = path.with_name(
+                        f"{path.stem}_emergency{path.suffix}"
+                    )
+                    learning_agent.save(str(emergency))
+                    print(f"Memory watchdog stopped training: {exc}")
+                    print(f"Emergency checkpoint: {emergency}")
+                history["stopped_early"] = True
+                history["stop_reason"] = str(exc)
+                break
+
         result = run_episode(env, learning_agent, fp_agents, agent_pid, is_ppo)
+        games_completed = game_num
+
+        if (
+            checkpoint_path
+            and checkpoint_every > 0
+            and game_num % checkpoint_every == 0
+        ):
+            learning_agent.save(checkpoint_path)
 
         if result["won"]:
             wins_window += 1
@@ -307,6 +336,7 @@ def train(
             window_trades_declined = 0
             window_props_acquired = 0
 
+    history["games_completed"] = games_completed
     return dict(history)
 
 
@@ -329,7 +359,7 @@ def evaluate(
         learning_agent.epsilon = 0.0
 
     agent_pid = learning_agent.player_id
-    env = MonopolyEnv(agent_ids=[agent_pid], max_rounds=300)
+    env = MonopolyEnv(agent_ids=[agent_pid], max_rounds=200)
     other_pids = [i for i in range(NUM_PLAYERS) if i != agent_pid]
     fp_agents = [
         FPAgentA(other_pids[0]),

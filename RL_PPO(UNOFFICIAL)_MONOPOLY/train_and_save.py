@@ -13,9 +13,17 @@ Usage:
 
 import argparse
 import json
+import sys
 import time
 from pathlib import Path
 
+import torch
+
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from training_guard import GIB, MemoryWatchdog
 from monopoly_drl import train_ddqn, train_ppo
 
 
@@ -54,13 +62,16 @@ def main():
         default="auto",
         help="PyTorch device (default: auto)",
     )
+    parser.add_argument("--checkpoint-every", type=int, default=100)
+    parser.add_argument("--stop-rss-gib", type=float, default=3)
+    parser.add_argument("--hard-rss-gib", type=float, default=4)
+    parser.add_argument("--min-available-gib", type=float, default=2)
     args = parser.parse_args()
 
     # Default output filename
     if args.out is None:
         mode = "hybrid" if args.hybrid else "standard"
-        root = Path(__file__).resolve().parents[1]
-        args.out = str(root / "artifacts" / "ppo_plus" / f"{args.algo}_{mode}_model.pt")
+        args.out = str(ROOT / "artifacts" / "ppo_plus" / f"{args.algo}_{mode}_model.pt")
 
     print(f"\n{'=' * 60}")
     print(f"  Algorithm : {args.algo.upper()}")
@@ -71,6 +82,11 @@ def main():
     print(f"{'=' * 60}\n")
 
     start = time.time()
+    watchdog = MemoryWatchdog(
+        stop_rss_gib=args.stop_rss_gib,
+        hard_rss_gib=args.hard_rss_gib,
+        min_available_gib=args.min_available_gib,
+    )
 
     if args.algo == "ppo":
         agent, history = train_ppo(
@@ -79,6 +95,9 @@ def main():
             n_games=args.games,
             log_every=max(1, args.games // 50),
             device=args.device,
+            checkpoint_every=args.checkpoint_every,
+            checkpoint_path=args.out,
+            watchdog=watchdog,
         )
     else:
         agent, history = train_ddqn(
@@ -90,6 +109,9 @@ def main():
 
     elapsed = time.time() - start
     print(f"\nTraining complete in {elapsed:.1f}s")
+    print(f"Peak process RSS: {watchdog.peak_rss / GIB:.2f} GiB")
+    if getattr(agent, "device", torch.device("cpu")).type == "cuda":
+        print(f"Peak CUDA memory: {torch.cuda.max_memory_allocated() / GIB:.2f} GiB")
 
     # Save model weights
     agent.save(args.out)
