@@ -13,10 +13,29 @@ PPO_ROOT = ROOT / "RL_PPO(UNOFFICIAL)_MONOPOLY"
 sys.path.insert(0, str(PPO_ROOT))
 
 from monopoly_drl.agent_ppo import PPOAgent  # noqa: E402
-from monopoly_drl.env import MonopolyEnv  # noqa: E402
+from monopoly_drl.actions import ActionType  # noqa: E402
+from monopoly_drl.env import PHASE_POST_ROLL, MonopolyEnv, TradeOffer  # noqa: E402
 
 
 class PPOAgentTests(unittest.TestCase):
+    def test_hybrid_trade_policy_respects_current_legal_mask(self) -> None:
+        env = MonopolyEnv(agent_ids=[0], max_rounds=2)
+        env.turn_order = [0, 1, 2, 3]
+        env.current_turn_idx = 0
+        env.phase = PHASE_POST_ROLL
+        env.has_rolled = False
+        env.pending_trades[1] = TradeOffer(1, 0, cash_offered=100)
+        agent = PPOAgent(player_id=0, hybrid=True, device="cpu")
+
+        allowed = env.get_allowed_actions(0)
+        self.assertEqual(allowed, [int(ActionType.ROLL_DICE)])
+        action, log_prob, _, _ = agent.choose_action(
+            env._get_state(0), env, allowed
+        )
+
+        self.assertIn(action, allowed)
+        self.assertIsNotNone(log_prob)
+
     def test_cpu_update_and_checkpoint_round_trip(self) -> None:
         env = MonopolyEnv(agent_ids=[0], max_rounds=2)
         agent = PPOAgent(

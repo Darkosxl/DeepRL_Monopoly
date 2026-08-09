@@ -101,6 +101,11 @@ def run_episode(
                 action = learning_agent.choose_action(state, env, allowed)
                 log_prob, value, nn_allowed = 0.0, 0.0, allowed
 
+            if action not in allowed:
+                raise ValueError(
+                    f"Learning agent selected illegal action {action}; allowed={allowed}"
+                )
+
             # ── Count the action BEFORE stepping ──────────────────────────
             a = action
             buy_offset = int(ActionType.BUY_PROPERTY)

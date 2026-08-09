@@ -208,7 +208,7 @@ class PPOAgent:
                 return int(ActionType.BUY_PROPERTY), None, None, allowed_actions
 
         # Hybrid: handle trade acceptance
-        if self.hybrid:
+        if self.hybrid and int(ActionType.ACCEPT_TRADE) in allowed_actions:
             pending = next(
                 (o for o in env.pending_trades.values() if o.to_player == pid),
                 None,
