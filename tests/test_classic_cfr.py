@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import gzip
+import pickle
 import tempfile
 import unittest
 from pathlib import Path
@@ -55,8 +57,15 @@ class ClassicCFRTests(unittest.TestCase):
             path = Path(directory) / "cfr.pkl.gz"
             model.save(path)
             restored = MonteCarloCFR.load(path)
+            with gzip.open(path, "rb") as handle:
+                payload = pickle.load(handle)
 
         self.assertEqual(restored.config, model.config)
+        self.assertEqual(payload["format_version"], 2)
+        saved_node = next(
+            value for table in payload["tables"] for value in table.values()
+        )
+        self.assertIsInstance(saved_node, tuple)
         self.assertEqual(
             [len(table) for table in restored.tables],
             [len(table) for table in model.tables],

@@ -29,7 +29,7 @@ from monopoly_drl.env import MonopolyEnv  # noqa: E402
 from monopoly_drl.state import STATE_DIM  # noqa: E402
 
 
-CHECKPOINT_VERSION = 1
+CHECKPOINT_VERSION = 2
 
 
 @dataclass
@@ -121,6 +121,15 @@ class InfoSet:
         if total > 0:
             return self.strategy_sum / total
         return self.current_policy()
+
+
+class _CheckpointUnpickler(pickle.Unpickler):
+    """Map version-one `python -m` checkpoints back to this module."""
+
+    def find_class(self, module: str, name: str):
+        if module == "__main__" and name == "InfoSet":
+            return InfoSet
+        return super().find_class(module, name)
 
 
 @dataclass(frozen=True)
@@ -344,7 +353,18 @@ class MonteCarloCFR:
             "action_dim": ACTION_SPACE_SIZE,
             "config": asdict(self.config),
             "games_trained": self.games_trained,
-            "tables": self.tables,
+            "tables": [
+                {
+                    key: (
+                        node.actions,
+                        node.regret_sum,
+                        node.strategy_sum,
+                        node.visits,
+                    )
+                    for key, node in table.items()
+                }
+                for table in self.tables
+            ],
             "rng_state": self.rng.getstate(),
         }
         with gzip.open(temporary, "wb") as handle:
@@ -354,7 +374,10 @@ class MonteCarloCFR:
     @classmethod
     def load(cls, path: str | Path) -> "MonteCarloCFR":
         with gzip.open(path, "rb") as handle:
-            payload = pickle.load(handle)
+            payload = _CheckpointUnpickler(handle).load()
+        version = payload.get("format_version", 1)
+        if version not in (1, CHECKPOINT_VERSION):
+            raise ValueError(f"Unsupported CFR checkpoint version: {version}")
         expected = (RULESET_VERSION, STATE_DIM, ACTION_SPACE_SIZE)
         actual = (
             payload.get("ruleset"),
@@ -364,7 +387,21 @@ class MonteCarloCFR:
         if actual != expected:
             raise ValueError(f"Incompatible CFR checkpoint: {actual}, expected {expected}")
         model = cls(CFRConfig(**payload["config"]))
-        model.tables = payload["tables"]
+        model.tables = []
+        for table in payload["tables"]:
+            restored = {}
+            for key, value in table.items():
+                if isinstance(value, InfoSet):
+                    restored[key] = value
+                    continue
+                actions, regret_sum, strategy_sum, visits = value
+                restored[key] = InfoSet(
+                    actions=tuple(actions),
+                    regret_sum=np.asarray(regret_sum, dtype=np.float32),
+                    strategy_sum=np.asarray(strategy_sum, dtype=np.float32),
+                    visits=int(visits),
+                )
+            model.tables.append(restored)
         model.games_trained = payload["games_trained"]
         model.rng.setstate(payload["rng_state"])
         return model
