@@ -22,8 +22,12 @@ from monopoly_bench.storage import (
 from monopoly_bench.training import (
     Trainer,
     _seed_all,
+    bootstrap_asu_expert,
     bootstrap_value_head,
     generate_population_games,
+    load_asu_examples,
+    population_jobs,
+    save_asu_examples,
 )
 
 
@@ -44,6 +48,20 @@ def _position() -> ReplayPosition:
         actor_id=0,
         game_id=7,
     )
+
+
+def _expert_examples(count: int = 8) -> dict[str, np.ndarray]:
+    rng = np.random.default_rng(9)
+    masks = np.zeros((count, 2_958), dtype=np.bool_)
+    masks[:, [1, 2]] = True
+    return {
+        "states": rng.normal(size=(count, 300)).astype(np.float32),
+        "legal_masks": masks,
+        "selected_actions": np.where(np.arange(count) % 2, 1, 2).astype(np.int64),
+        "actors": np.arange(count, dtype=np.int64) % 4,
+        "outcomes": np.eye(4, dtype=np.float32)[np.arange(count) % 4],
+        "teachers": (np.arange(count) == 0).astype(np.uint8),
+    }
 
 
 def test_replay_round_trip(bench_tmp) -> None:
@@ -154,6 +172,30 @@ def test_value_bootstrap_never_changes_ppo_actor() -> None:
     assert all(parameter.requires_grad for parameter in model.parameters())
 
 
+def test_asu_expert_round_trip_and_bootstrap_updates_policy(tmp_path) -> None:
+    source = tmp_path / "asu.npz"
+    save_asu_examples(source, _expert_examples())
+    examples = load_asu_examples((source,))
+    model = MonopolyZeroNet()
+    model.load_ppo_actor(PPO)
+    before = model.policy_head.weight.detach().clone()
+    optimizer = torch.optim.AdamW(model.parameters(), lr=1e-3)
+    scaler = torch.amp.GradScaler("cuda", enabled=False)
+    stats = bootstrap_asu_expert(
+        model,
+        optimizer,
+        scaler,
+        examples,
+        updates=2,
+        batch_size=4,
+        gradient_clip=1,
+        seed=4,
+    )
+    assert not torch.equal(before, model.policy_head.weight)
+    assert stats["head_only_updates"] == 1
+    assert all(parameter.requires_grad for parameter in model.parameters())
+
+
 def test_fresh_value_head_initialization_uses_the_run_seed() -> None:
     _seed_all(BenchmarkConfig().seeds.bootstrap)
     first = MonopolyZeroNet().value_head.state_dict()
@@ -187,7 +229,15 @@ def test_tiny_generation_and_resume(bench_tmp) -> None:
             min_free_disk_gib=0,
         ),
     )
-    trainer = Trainer(bench_tmp / "run", PPO, config=config, device="cpu")
+    expert = bench_tmp / "expert.npz"
+    save_asu_examples(expert, _expert_examples())
+    trainer = Trainer(
+        bench_tmp / "run",
+        PPO,
+        config=config,
+        device="cpu",
+        asu_expert_data=(expert,),
+    )
     report = trainer.run(1)[0]
     assert report["games"] == 4 and report["positions"] > 0
     resumed = Trainer(bench_tmp / "run", PPO, config=config, device="cpu")
@@ -222,3 +272,16 @@ def test_population_uses_four_spawned_cpu_workers() -> None:
     )
     assert len(games) == 4
     assert all(game.completed and not game.crashes for game in games)
+
+
+def test_population_reserves_half_of_baseline_games_for_asu() -> None:
+    config = BenchmarkConfig()
+    jobs = population_jobs(
+        generation=1,
+        config=config,
+        snapshots=[],
+        baseline_names=["asu_value_v1", "TheDealMaker"],
+    )
+    baseline_jobs = [job for job in jobs if job["category"] == "baseline"]
+    assert len(baseline_jobs) == 8
+    assert sum(job["baseline"] == "asu_value_v1" for job in baseline_jobs) == 4

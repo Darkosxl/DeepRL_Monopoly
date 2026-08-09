@@ -11,16 +11,9 @@ from dataclasses import replace
 from fractions import Fraction
 from functools import lru_cache
 from itertools import count
-from pathlib import Path
 from typing import Iterator, Mapping
 
-
-ROOT = Path(__file__).resolve().parents[1]
-PPO_ROOT = ROOT / "RL_PPO(UNOFFICIAL)_MONOPOLY"
-if str(PPO_ROOT) not in sys.path:
-    sys.path.insert(0, str(PPO_ROOT))
-
-from monopoly_drl.actions import (  # noqa: E402
+from monopoly_game_engine.actions import (  # noqa: E402
     AUCTION_ACTION_TO_INCREMENT,
     OFFSETS,
     PROPERTY_IDS,
@@ -28,7 +21,7 @@ from monopoly_drl.actions import (  # noqa: E402
     AuctionAction,
     action_to_description,
 )
-from monopoly_drl.constants import (  # noqa: E402
+from monopoly_game_engine.constants import (  # noqa: E402
     COLOR_GROUPS,
     GO_TO_JAIL_SQUARE,
     MAX_HOUSES,
@@ -36,7 +29,7 @@ from monopoly_drl.constants import (  # noqa: E402
     PROPERTIES,
     RULESET_VERSION,
 )
-from monopoly_drl.env import PHASE_AUCTION  # noqa: E402
+from monopoly_game_engine.env import PHASE_AUCTION  # noqa: E402
 
 from .spec import (  # noqa: E402
     ASU_ROLLOUT_V1,

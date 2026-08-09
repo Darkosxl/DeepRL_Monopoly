@@ -16,11 +16,8 @@ import numpy as np
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-SIMULATOR_ROOT = PROJECT_ROOT / "RL_PPO(UNOFFICIAL)_MONOPOLY"
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
-if str(SIMULATOR_ROOT) not in sys.path:
-    sys.path.insert(0, str(SIMULATOR_ROOT))
 
 from ASU_FROZEN_TEACHER import (  # noqa: E402
     ASU_VALUE_V1,
@@ -28,7 +25,7 @@ from ASU_FROZEN_TEACHER import (  # noqa: E402
     ASUValueV1,
 )
 
-from monopoly_drl.actions import (  # noqa: E402
+from monopoly_game_engine.actions import (  # noqa: E402
     ACTION_SPACE_SIZE,
     AUCTION_ACTION_TO_INCREMENT,
     OFFSETS,
@@ -37,13 +34,13 @@ from monopoly_drl.actions import (  # noqa: E402
     ActionType,
     AuctionAction,
 )
-from monopoly_drl.agents_fixed import FPAgentA, FPAgentB, FPAgentC  # noqa: E402
-from monopoly_drl.constants import (  # noqa: E402
+from monopoly_game_engine.agents_fixed import FPAgentA, FPAgentB, FPAgentC  # noqa: E402
+from monopoly_game_engine.constants import (  # noqa: E402
     NUM_PLAYERS,
     RULESET_VERSION,
     TRADE_CASH_LEVELS,
 )
-from monopoly_drl.env import MonopolyEnv  # noqa: E402
+from monopoly_game_engine.env import MonopolyEnv  # noqa: E402
 
 
 SCHEMA_VERSION = "monopoly-decision-v2"

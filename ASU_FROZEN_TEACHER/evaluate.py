@@ -7,15 +7,12 @@ import hashlib
 import json
 import math
 import random
-import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 from .core import (
-    PPO_ROOT,
-    ROOT,
     ASURolloutV1,
     ASUValueV1,
     RULESET_VERSION,
@@ -24,23 +21,17 @@ from .core import (
 )
 from .spec import FROZEN_SPEC_HASH
 
-
-if str(ROOT) not in sys.path:
-    sys.path.insert(0, str(ROOT))
-if str(PPO_ROOT) not in sys.path:
-    sys.path.insert(0, str(PPO_ROOT))
-
-from monopoly_drl.actions import ACTION_SPACE_SIZE, ActionType  # noqa: E402
-from monopoly_drl.agent_ddqn import DDQNAgent  # noqa: E402
-from monopoly_drl.agent_ppo import (  # noqa: E402
+from monopoly_game_engine.actions import ACTION_SPACE_SIZE, ActionType  # noqa: E402
+from monopoly_game_engine.agent_ddqn import DDQNAgent  # noqa: E402
+from monopoly_game_engine.agent_ppo import (  # noqa: E402
     PPOAgent,
     fixed_accept_trade_decision,
     fixed_buy_decision,
 )
-from monopoly_drl.agents_fixed import FP_AGENT_CLASSES  # noqa: E402
-from monopoly_drl.constants import NUM_PLAYERS  # noqa: E402
-from monopoly_drl.env import MonopolyEnv  # noqa: E402
-from monopoly_drl.state import STATE_DIM  # noqa: E402
+from monopoly_game_engine.agents_fixed import FP_AGENT_CLASSES  # noqa: E402
+from monopoly_game_engine.constants import NUM_PLAYERS  # noqa: E402
+from monopoly_game_engine.env import MonopolyEnv  # noqa: E402
+from monopoly_game_engine.state import STATE_DIM  # noqa: E402
 
 
 SUPPORTED_SCRIPTED = tuple(f"fixed-{letter}" for letter in "abcdef")

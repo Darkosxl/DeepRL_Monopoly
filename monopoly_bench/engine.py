@@ -8,7 +8,6 @@ import hashlib
 from itertools import product
 from pathlib import Path
 import random
-import sys
 from types import MethodType
 from typing import Iterable
 
@@ -16,12 +15,9 @@ import numpy as np
 
 
 ROOT = Path(__file__).resolve().parents[1]
-PPO_ROOT = ROOT / "RL_PPO(UNOFFICIAL)_MONOPOLY"
-if str(PPO_ROOT) not in sys.path:
-    sys.path.insert(0, str(PPO_ROOT))
 
-from monopoly_drl.actions import ACTION_SPACE_SIZE, OFFSETS, ActionType  # noqa: E402
-from monopoly_drl.constants import (  # noqa: E402
+from monopoly_game_engine.actions import ACTION_SPACE_SIZE, OFFSETS, ActionType  # noqa: E402
+from monopoly_game_engine.constants import (  # noqa: E402
     GO_SALARY,
     JAIL_BAIL,
     JAIL_SQUARE,
@@ -29,8 +25,8 @@ from monopoly_drl.constants import (  # noqa: E402
     NUM_PLAYERS,
     RULESET_VERSION,
 )
-from monopoly_drl.env import MonopolyEnv  # noqa: E402
-from monopoly_drl.state import STATE_DIM  # noqa: E402
+from monopoly_game_engine.env import MonopolyEnv  # noqa: E402
+from monopoly_game_engine.state import STATE_DIM  # noqa: E402
 
 
 if (RULESET_VERSION, STATE_DIM, ACTION_SPACE_SIZE, NUM_PLAYERS) != (
@@ -205,7 +201,7 @@ def transition(
 
 def engine_hashes() -> dict[str, str]:
     files = ("actions.py", "constants.py", "env.py", "state.py", "networks.py", "agents_fixed.py")
-    directory = PPO_ROOT / "monopoly_drl"
+    directory = ROOT / "monopoly_game_engine"
     return {
         str((directory / name).relative_to(ROOT)): hashlib.sha256((directory / name).read_bytes()).hexdigest()
         for name in files
@@ -213,7 +209,11 @@ def engine_hashes() -> dict[str, str]:
 
 
 def source_hashes() -> dict[str, str]:
+    paths = [
+        *Path(__file__).parent.glob("*.py"),
+        *(ROOT / "ASU_FROZEN_TEACHER").glob("*.py"),
+    ]
     return {
         str(path.relative_to(ROOT)): hashlib.sha256(path.read_bytes()).hexdigest()
-        for path in sorted(Path(__file__).parent.glob("*.py"))
+        for path in sorted(paths)
     }

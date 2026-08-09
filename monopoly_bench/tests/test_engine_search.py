@@ -25,7 +25,7 @@ from monopoly_bench.search import (
     progressive_actions,
     progressive_width,
 )
-from monopoly_drl.networks import ActorNetwork
+from monopoly_game_engine.networks import ActorNetwork
 
 
 PPO = "artifacts/ppo_plus/ppo_hybrid_2000_v2.pt"

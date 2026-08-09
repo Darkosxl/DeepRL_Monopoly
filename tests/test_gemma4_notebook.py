@@ -71,7 +71,7 @@ class Gemma4NotebookTests(unittest.TestCase):
         self.assertNotIn('os.getenv("HF_TOKEN")', source)
         self.assertIn('RUN_ROOT = Path("/content/asu_pilot_v1")', source)
         self.assertNotIn('drive.mount(', source)
-        self.assertNotIn('from monopoly_drl.agent_ppo import PPOAgent', source)
+        self.assertNotIn('from monopoly_game_engine.agent_ppo import PPOAgent', source)
         self.assertNotIn('ppo_plus_v2_teacher.pt', source)
         self.assertNotIn('teacher_checkpoint_hash', source)
         self.assertNotIn('heuristic_teacher(', source)

@@ -67,7 +67,7 @@ presented as traditional-rule Monopoly.
 From the repository root, train a hybrid DDQN milestone for 2,000 games:
 
 ```bash
-python 'RL_PPO(UNOFFICIAL)_MONOPOLY/train_and_save.py' \
+python tools/train_and_save.py \
   --algo ddqn --games 2000 --device auto \
   --out artifacts/ddqn_plus/ddqn_hybrid_2000_v2.pt
 ```
@@ -87,7 +87,7 @@ Resume a compatible DDQN checkpoint to a total game count with the same output
 path and seed:
 
 ```bash
-python 'RL_PPO(UNOFFICIAL)_MONOPOLY/train_and_save.py' \
+python tools/train_and_save.py \
   --algo ddqn --games 10000 --device auto --seed 42 --resume \
   --out artifacts/ddqn_plus/ddqn_hybrid_2000_v2.pt
 ```
@@ -99,7 +99,7 @@ game-boundary resume reproduce an uninterrupted run.
 Play a trained DDQN checkpoint:
 
 ```bash
-python 'RL_PPO(UNOFFICIAL)_MONOPOLY/play_game.py' \
+python tools/play_game.py \
   --algo ddqn --players 4 \
   --model artifacts/ddqn_plus/ddqn_hybrid_2000_v2.pt
 ```

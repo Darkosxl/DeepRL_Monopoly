@@ -16,17 +16,14 @@ import numpy as np
 
 
 ROOT = Path(__file__).resolve().parents[3]
-PPO_ROOT = ROOT / "RL_PPO(UNOFFICIAL)_MONOPOLY"
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
-if str(PPO_ROOT) not in sys.path:
-    sys.path.insert(0, str(PPO_ROOT))
 
 from training_guard import GIB, MemoryLimitReached, MemoryWatchdog  # noqa: E402
-from monopoly_drl.actions import ACTION_SPACE_SIZE  # noqa: E402
-from monopoly_drl.constants import NUM_PLAYERS, RULESET_VERSION  # noqa: E402
-from monopoly_drl.env import MonopolyEnv  # noqa: E402
-from monopoly_drl.state import STATE_DIM  # noqa: E402
+from monopoly_game_engine.actions import ACTION_SPACE_SIZE  # noqa: E402
+from monopoly_game_engine.constants import NUM_PLAYERS, RULESET_VERSION  # noqa: E402
+from monopoly_game_engine.env import MonopolyEnv  # noqa: E402
+from monopoly_game_engine.state import STATE_DIM  # noqa: E402
 
 
 CHECKPOINT_VERSION = 3

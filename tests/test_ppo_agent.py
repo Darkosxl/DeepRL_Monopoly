@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -10,18 +9,14 @@ import numpy as np
 import torch
 
 
-ROOT = Path(__file__).resolve().parents[1]
-PPO_ROOT = ROOT / "RL_PPO(UNOFFICIAL)_MONOPOLY"
-sys.path.insert(0, str(PPO_ROOT))
-
-from monopoly_drl.agent_ppo import (  # noqa: E402
+from monopoly_game_engine.agent_ppo import (  # noqa: E402
     PPOAgent,
     fixed_accept_trade_decision,
 )
-from monopoly_drl.actions import ActionType  # noqa: E402
-from monopoly_drl.agents_fixed import TheGambler  # noqa: E402
-from monopoly_drl.env import PHASE_POST_ROLL, MonopolyEnv, TradeOffer  # noqa: E402
-from monopoly_drl.train import run_episode  # noqa: E402
+from monopoly_game_engine.actions import ActionType  # noqa: E402
+from monopoly_game_engine.agents_fixed import TheGambler  # noqa: E402
+from monopoly_game_engine.env import PHASE_POST_ROLL, MonopolyEnv, TradeOffer  # noqa: E402
+from monopoly_game_engine.train import run_episode  # noqa: E402
 
 
 class PPOAgentTests(unittest.TestCase):
@@ -167,11 +162,11 @@ class PPOAgentTests(unittest.TestCase):
                 PPOAgent(0, hybrid=False, device="cpu").load(str(path))
 
     def test_legacy_checkpoint_has_clear_error(self) -> None:
-        legacy = PPO_ROOT / "hy_model.pt"
-        if not legacy.exists():
-            self.skipTest("legacy checkpoint is unavailable")
-        with self.assertRaisesRegex(ValueError, "Legacy PPO checkpoint"):
-            PPOAgent(0, hybrid=True, device="cpu").load(str(legacy))
+        with tempfile.TemporaryDirectory() as directory:
+            legacy = Path(directory) / "legacy.pt"
+            torch.save({"actor": {}, "critic": {}}, legacy)
+            with self.assertRaisesRegex(ValueError, "Legacy PPO checkpoint"):
+                PPOAgent(0, hybrid=True, device="cpu").load(str(legacy))
 
 
 if __name__ == "__main__":

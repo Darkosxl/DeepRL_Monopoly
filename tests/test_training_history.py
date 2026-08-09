@@ -5,7 +5,7 @@ import unittest
 
 
 ROOT = Path(__file__).resolve().parents[1]
-SCRIPT = ROOT / "RL_PPO(UNOFFICIAL)_MONOPOLY" / "train_and_save.py"
+SCRIPT = ROOT / "tools" / "train_and_save.py"
 sys.path.insert(0, str(SCRIPT.parent))
 SPEC = importlib.util.spec_from_file_location("train_and_save", SCRIPT)
 MODULE = importlib.util.module_from_spec(SPEC)

@@ -1,26 +1,21 @@
 from __future__ import annotations
 
-import sys
 import tempfile
 import unittest
-from unittest.mock import patch
 from pathlib import Path
+from unittest.mock import patch
 from types import SimpleNamespace
 
 import numpy as np
 import torch
 
 
-ROOT = Path(__file__).resolve().parents[1]
-PPO_ROOT = ROOT / "RL_PPO(UNOFFICIAL)_MONOPOLY"
-sys.path.insert(0, str(PPO_ROOT))
-
-from monopoly_drl.actions import ACTION_SPACE_SIZE, OFFSETS, ActionType  # noqa: E402
-from monopoly_drl.agent_ddqn import DDQNAgent  # noqa: E402
-from monopoly_drl.env import MonopolyEnv, TradeOffer  # noqa: E402
-from monopoly_drl.networks import DDQNNetwork  # noqa: E402
-from monopoly_drl.state import STATE_DIM  # noqa: E402
-from monopoly_drl.train import run_episode  # noqa: E402
+from monopoly_game_engine.actions import ACTION_SPACE_SIZE, OFFSETS, ActionType  # noqa: E402
+from monopoly_game_engine.agent_ddqn import DDQNAgent  # noqa: E402
+from monopoly_game_engine.env import MonopolyEnv, TradeOffer  # noqa: E402
+from monopoly_game_engine.networks import DDQNNetwork  # noqa: E402
+from monopoly_game_engine.state import STATE_DIM  # noqa: E402
+from monopoly_game_engine.train import run_episode  # noqa: E402
 
 
 class DDQNAgentTests(unittest.TestCase):
@@ -55,7 +50,9 @@ class DDQNAgentTests(unittest.TestCase):
             choices.append(list(options))
             return options[0]
 
-        with patch("monopoly_drl.agent_ddqn.random.choice", side_effect=choose_first):
+        with patch(
+            "monopoly_game_engine.agent_ddqn.random.choice", side_effect=choose_first
+        ):
             action = DDQNAgent._balanced_random_action(allowed)
 
         self.assertEqual(action, int(ActionType.END_TURN))

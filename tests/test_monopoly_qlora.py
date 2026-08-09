@@ -9,12 +9,11 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
-PPO_ROOT = ROOT / "RL_PPO(UNOFFICIAL)_MONOPOLY"
 SLM_ROOT = ROOT / "SLM_HANDMADE_MONOPOLY"
-sys.path[:0] = [str(PPO_ROOT), str(SLM_ROOT)]
+sys.path.insert(0, str(SLM_ROOT))
 
-from monopoly_drl.actions import ACTION_SPACE_SIZE, OFFSETS, PROPERTY_IDS, ActionType  # noqa: E402
-from monopoly_drl.env import MonopolyEnv  # noqa: E402
+from monopoly_game_engine.actions import ACTION_SPACE_SIZE, OFFSETS, PROPERTY_IDS, ActionType  # noqa: E402
+from monopoly_game_engine.env import MonopolyEnv  # noqa: E402
 from monopoly_qlora import (  # noqa: E402
     SCHEMA_VERSION,
     DecisionFormatError,

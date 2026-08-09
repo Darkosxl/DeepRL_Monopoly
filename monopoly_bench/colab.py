@@ -91,7 +91,7 @@ def build_baseline_bundle(
 
 
 def _allowed_resume_path(relative: Path) -> bool:
-    if relative.as_posix() in {"config.json", "status.json"}:
+    if relative.as_posix() in {"config.json", "status.json", "asu_expert.npz"}:
         return True
     if len(relative.parts) == 2:
         directory, name = relative.parts
@@ -168,11 +168,17 @@ class ColabLauncher:
                 self._run(["colab", "upload", "-s", self.session, str(archive), "/content/DeepRL_Monopoly.tar.gz"])
                 self._run(["colab", "upload", "-s", self.session, str(bundle), "/content/monopolyzero-resume.tar.gz"])
                 self._run(["colab", "upload", "-s", self.session, str(baselines), "/content/monopolyzero-baselines.tar.gz"])
-                self._run(["colab", "exec", "-s", self.session, "-f", str(REMOTE_RUNNER), "--timeout", "86400"])
+                execution_error = None
+                try:
+                    self._run(["colab", "exec", "-s", self.session, "-f", str(REMOTE_RUNNER), "--timeout", "86400"])
+                except Exception as exc:
+                    execution_error = exc
                 temporary_output = output.with_name(output.name + ".tmp")
                 self._run(["colab", "download", "-s", self.session, "/content/monopolyzero-result.tar.gz", str(temporary_output)])
                 _validate_archive(temporary_output, "run/")
                 os.replace(temporary_output, output)
+                if execution_error is not None:
+                    raise execution_error
                 return output
             finally:
                 try:

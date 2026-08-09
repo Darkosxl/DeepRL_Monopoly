@@ -47,6 +47,9 @@ class TrainingConfig:
     promotion_games: int = 120
     promotion_win_rate: float = 0.55
     promotion_wilson_lower: float = 0.45
+    expert_fraction: float = 0.20
+    expert_decay_generations: int = 8
+    asu_rollout_bootstrap_positions: int = 64
 
     def __post_init__(self) -> None:
         counts = (
@@ -57,9 +60,14 @@ class TrainingConfig:
             self.replay_capacity,
             self.updates_per_generation,
             self.batch_size,
+            self.expert_decay_generations,
         )
         if min(counts) < 1:
             raise ValueError("Training counts must be positive")
+        if self.asu_rollout_bootstrap_positions < 0:
+            raise ValueError("ASU rollout bootstrap positions cannot be negative")
+        if not 0 <= self.expert_fraction <= 1:
+            raise ValueError("Expert fraction must be in [0, 1]")
         if self.games_per_generation % self.workers:
             raise ValueError("Games per generation must divide evenly across workers")
         if self.games_per_generation % 4:

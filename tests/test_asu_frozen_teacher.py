@@ -37,11 +37,11 @@ from ASU_FROZEN_TEACHER.evaluate import (
     parse_agent_spec,
     wilson_interval,
 )
-from monopoly_drl.actions import ActionType, AuctionAction
-from monopoly_drl.agent_ddqn import DDQNAgent
-from monopoly_drl.agent_ppo import PPOAgent
-from monopoly_drl.agents_fixed import FPAgentA, FPAgentB, FPAgentC
-from monopoly_drl.env import (
+from monopoly_game_engine.actions import ActionType, AuctionAction
+from monopoly_game_engine.agent_ddqn import DDQNAgent
+from monopoly_game_engine.agent_ppo import PPOAgent
+from monopoly_game_engine.agents_fixed import FPAgentA, FPAgentB, FPAgentC
+from monopoly_game_engine.env import (
     PHASE_OUT_OF_TURN,
     PHASE_POST_ROLL,
     MonopolyEnv,

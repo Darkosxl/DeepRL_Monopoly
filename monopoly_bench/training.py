@@ -3,22 +3,35 @@
 from __future__ import annotations
 
 from dataclasses import asdict
+import hashlib
 import json
 import multiprocessing as mp
+import os
 from pathlib import Path
 import random
 import shutil
+from typing import Iterable
 
 import numpy as np
 import torch
 from torch import nn
+from torch.nn import functional as F
 
-from .adapters import PPOAdapter, SearchAdapter, available_baselines, fixed_baselines
+from ASU_FROZEN_TEACHER import FROZEN_SPEC_HASH
+
+from .adapters import (
+    ASUAdapter,
+    FixedAdapter,
+    PPOAdapter,
+    SearchAdapter,
+    available_baselines,
+    fixed_baselines,
+)
 from .arena import balanced_single_seats, balanced_team_seats, play_game
 from .colab import ColabLauncher, build_resume_bundle
 from .config import BenchmarkConfig, SearchConfig
 from .contracts import GameResult
-from .engine import MAX_DECISIONS_PER_TURN, NUM_PLAYERS, SharedGame
+from .engine import MAX_DECISIONS_PER_TURN, NUM_PLAYERS, RULESET_VERSION, SharedGame, legal_mask
 from .model import MonopolyZeroNet
 from .storage import (
     CheckpointManager,
@@ -27,6 +40,7 @@ from .storage import (
     pending_replay_descriptor,
 )
 from .watchdog import ResourceLimitReached, ResourceWatchdog
+from monopoly_game_engine.agents_fixed import FP_AGENT_CLASSES
 
 
 def _seed_all(seed: int) -> None:
@@ -109,6 +123,241 @@ def train_step(
         "value_loss": float(value_loss.detach()),
         "gradient_norm": float(gradient_norm),
     }
+
+
+def expert_train_step(
+    model: MonopolyZeroNet,
+    optimizer: torch.optim.Optimizer,
+    scaler: torch.amp.GradScaler,
+    batch: dict[str, np.ndarray],
+    gradient_clip: float,
+) -> dict[str, float]:
+    """Imitate a frozen ASU action while learning value from the real winner."""
+    model.train()
+    device = next(model.parameters()).device
+    states = torch.as_tensor(batch["states"], dtype=torch.float32, device=device)
+    masks = torch.as_tensor(batch["legal_masks"], dtype=torch.bool, device=device)
+    actions = torch.as_tensor(batch["selected_actions"], dtype=torch.long, device=device)
+    outcomes = torch.as_tensor(batch["outcomes"], dtype=torch.float32, device=device)
+    actors = torch.as_tensor(batch["actors"], dtype=torch.long, device=device)
+    targets = _relative_outcomes(outcomes, actors)
+
+    optimizer.zero_grad(set_to_none=True)
+    amp = device.type == "cuda"
+    with torch.autocast(device_type=device.type, dtype=torch.float16, enabled=amp):
+        logits, values = model(states, masks)
+        policy_loss = F.cross_entropy(logits, actions)
+        value_loss = -(targets * values.clamp_min(1e-8).log()).sum(dim=1).mean()
+        loss = policy_loss + value_loss
+    scaler.scale(loss).backward()
+    scaler.unscale_(optimizer)
+    gradient_norm = nn.utils.clip_grad_norm_(model.parameters(), gradient_clip)
+    scaler.step(optimizer)
+    scaler.update()
+    return {
+        "loss": float(loss.detach()),
+        "policy_loss": float(policy_loss.detach()),
+        "value_loss": float(value_loss.detach()),
+        "gradient_norm": float(gradient_norm),
+    }
+
+
+_EXPERT_FIELDS = (
+    "states",
+    "legal_masks",
+    "selected_actions",
+    "actors",
+    "outcomes",
+    "teachers",
+)
+
+
+def _validate_asu_examples(examples: dict[str, np.ndarray]) -> None:
+    missing = set(_EXPERT_FIELDS) - set(examples)
+    if missing:
+        raise ValueError(f"ASU expert data is missing fields: {sorted(missing)}")
+    count = len(examples["states"])
+    expected = {
+        "states": (count, 300),
+        "legal_masks": (count, 2_958),
+        "selected_actions": (count,),
+        "actors": (count,),
+        "outcomes": (count, NUM_PLAYERS),
+        "teachers": (count,),
+    }
+    actual = {name: tuple(examples[name].shape) for name in _EXPERT_FIELDS}
+    if count < 1 or actual != expected:
+        raise ValueError(f"Bad ASU expert shapes: {actual}; expected {expected}")
+    if not np.isfinite(examples["states"]).all() or not np.isfinite(examples["outcomes"]).all():
+        raise ValueError("ASU expert data contains non-finite values")
+    actions = examples["selected_actions"].astype(np.int64, copy=False)
+    if (actions < 0).any() or (actions >= 2_958).any():
+        raise ValueError("ASU expert data contains an out-of-range action")
+    if not examples["legal_masks"][np.arange(count), actions].all():
+        raise ValueError("ASU expert data contains an illegal selected action")
+
+
+def save_asu_examples(path: str | Path, examples: dict[str, np.ndarray]) -> Path:
+    _validate_asu_examples(examples)
+    destination = Path(path)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    temporary = destination.with_name(destination.name + ".tmp")
+    with temporary.open("wb") as handle:
+        np.savez_compressed(
+            handle,
+            **{name: examples[name] for name in _EXPERT_FIELDS},
+            ruleset=np.asarray(RULESET_VERSION),
+            asu_spec_hash=np.asarray(FROZEN_SPEC_HASH),
+        )
+    os.replace(temporary, destination)
+    return destination
+
+
+def _file_sha256(path: str | Path) -> str:
+    digest = hashlib.sha256()
+    with Path(path).open("rb") as handle:
+        for block in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def load_asu_examples(paths: Iterable[str | Path]) -> dict[str, np.ndarray]:
+    groups = []
+    for source in paths:
+        with np.load(Path(source), allow_pickle=False) as payload:
+            ruleset = str(payload["ruleset"].item())
+            spec_hash = str(payload["asu_spec_hash"].item())
+            if (ruleset, spec_hash) != (RULESET_VERSION, FROZEN_SPEC_HASH):
+                raise ValueError(
+                    f"Incompatible ASU expert data: {(ruleset, spec_hash)}"
+                )
+            group = {name: np.asarray(payload[name]).copy() for name in _EXPERT_FIELDS}
+        _validate_asu_examples(group)
+        groups.append(group)
+    if not groups:
+        raise ValueError("At least one ASU expert shard is required")
+    merged = {
+        name: np.concatenate([group[name] for group in groups], axis=0)
+        for name in _EXPERT_FIELDS
+    }
+    _validate_asu_examples(merged)
+    return merged
+
+
+def collect_asu_examples(
+    *,
+    games: int,
+    seed_base: int,
+    max_rounds: int,
+    rollout_positions: int = 0,
+) -> dict[str, np.ndarray]:
+    """Collect seat-balanced ASU actions with physical final-winner labels."""
+    if games < 1 or rollout_positions < 0:
+        raise ValueError("ASU games must be positive and rollout positions nonnegative")
+    value = ASUAdapter()
+    rollout = ASUAdapter(rollout=True)
+    fixed = [FixedAdapter(agent_class) for agent_class in FP_AGENT_CLASSES[:3]]
+    rollout_games = {
+        min(games - 1, index * games // rollout_positions)
+        for index in range(rollout_positions)
+    } if rollout_positions else set()
+    collected: dict[str, list] = {name: [] for name in _EXPERT_FIELDS}
+
+    for game_index in range(games):
+        seed = seed_base + game_index
+        game = SharedGame.new(seed, max_rounds)
+        teacher_seat = game_index % NUM_PLAYERS
+        opponent_seats = [seat for seat in range(NUM_PLAYERS) if seat != teacher_seat]
+        opponents = dict(zip(opponent_seats, fixed))
+        pending = []
+        used_rollout = False
+        for step in range(max_rounds * NUM_PLAYERS * MAX_DECISIONS_PER_TURN):
+            if game.env.done:
+                break
+            actor = game.env.whose_turn()
+            legal = tuple(game.env.get_allowed_actions(actor))
+            if len(legal) == 1:
+                action = legal[0]
+            elif actor == teacher_seat:
+                use_rollout = game_index in rollout_games and not used_rollout
+                policy = rollout if use_rollout else value
+                decision = policy.choose_action(game, actor, seed * 1_000_003 + step)
+                action = decision.action
+                used_rollout |= use_rollout
+                pending.append(
+                    (
+                        game.env._get_state(actor),
+                        legal_mask(legal),
+                        action,
+                        actor,
+                        int(use_rollout),
+                    )
+                )
+            else:
+                action = opponents[actor].choose_action(
+                    game, actor, seed * 1_000_003 + step
+                ).action
+            if action not in legal:
+                raise RuntimeError(f"ASU bootstrap produced illegal action {action}")
+            game.step(action)
+        if not game.env.done:
+            raise RuntimeError(f"ASU bootstrap game {game_index} did not complete")
+        outcome = np.zeros(NUM_PLAYERS, dtype=np.float32)
+        outcome[game.env.winner()] = 1.0
+        for state, mask, action, actor, teacher in pending:
+            collected["states"].append(state)
+            collected["legal_masks"].append(mask)
+            collected["selected_actions"].append(action)
+            collected["actors"].append(actor)
+            collected["outcomes"].append(outcome)
+            collected["teachers"].append(teacher)
+
+    examples = {
+        "states": np.asarray(collected["states"], dtype=np.float32),
+        "legal_masks": np.asarray(collected["legal_masks"], dtype=np.bool_),
+        "selected_actions": np.asarray(collected["selected_actions"], dtype=np.int64),
+        "actors": np.asarray(collected["actors"], dtype=np.int64),
+        "outcomes": np.asarray(collected["outcomes"], dtype=np.float32),
+        "teachers": np.asarray(collected["teachers"], dtype=np.uint8),
+    }
+    _validate_asu_examples(examples)
+    return examples
+
+
+def bootstrap_asu_expert(
+    model: MonopolyZeroNet,
+    optimizer: torch.optim.Optimizer,
+    scaler: torch.amp.GradScaler,
+    examples: dict[str, np.ndarray],
+    *,
+    updates: int,
+    batch_size: int,
+    gradient_clip: float,
+    seed: int,
+) -> dict[str, float]:
+    """Train both heads first, then the full PPO-initialized network."""
+    _validate_asu_examples(examples)
+    model.freeze_trunk()
+    rng = np.random.default_rng(seed)
+    head_updates = max(1, updates // 4)
+    last = {}
+    for update in range(updates):
+        if update == head_updates:
+            model.unfreeze_all()
+        indices = rng.choice(
+            len(examples["states"]),
+            size=min(batch_size, len(examples["states"])),
+            replace=False,
+        )
+        last = expert_train_step(
+            model,
+            optimizer,
+            scaler,
+            {name: values[indices] for name, values in examples.items()},
+            gradient_clip,
+        )
+    model.unfreeze_all()
+    return {**last, "head_only_updates": float(min(head_updates, updates))}
 
 
 def collect_bootstrap_examples(
@@ -252,8 +501,11 @@ def population_jobs(
     if count % 4:
         raise ValueError("Population fractions require a multiple of four games")
     jobs = []
-    team_seats = balanced_team_seats(count // 4)
-    single_seats = balanced_single_seats(count // 4)
+    baseline_count = count // 4
+    asu_count = max(1, baseline_count // 2)
+    team_seats = balanced_team_seats(baseline_count)
+    single_seats = balanced_single_seats(baseline_count)
+    other_baselines = [name for name in baseline_names if name != "asu_value_v1"]
     for index in range(count):
         if index < count // 2:
             category, seats = "self", set(range(NUM_PLAYERS))
@@ -272,7 +524,11 @@ def population_jobs(
         if category == "snapshot":
             job["snapshot"] = snapshots[local % len(snapshots)] if snapshots else None
         if category == "baseline":
-            job["baseline"] = baseline_names[local % len(baseline_names)]
+            job["baseline"] = (
+                "asu_value_v1"
+                if local < asu_count or not other_baselines
+                else other_baselines[(local - asu_count) % len(other_baselines)]
+            )
         jobs.append(job)
     return jobs
 
@@ -324,6 +580,7 @@ class Trainer:
         config: BenchmarkConfig | None = None,
         device: str = "auto",
         fallback_colab: bool = False,
+        asu_expert_data: Iterable[str | Path] | None = None,
     ):
         self.run_dir = Path(run_dir)
         self.config = config or BenchmarkConfig()
@@ -336,6 +593,8 @@ class Trainer:
         self.run_dir.mkdir(parents=True, exist_ok=True)
         for name in ("checkpoints", "candidates", "snapshots", "reports", "colab"):
             (self.run_dir / name).mkdir(exist_ok=True)
+        self.expert_path = self.run_dir / "asu_expert.npz"
+        expert_sources = tuple(asu_expert_data or ())
 
         config_path = self.run_dir / "config.json"
         if config_path.exists() and BenchmarkConfig.load(config_path) != self.config:
@@ -374,9 +633,39 @@ class Trainer:
             self.generation = resumed.generation
             self.league = resumed.league
             self.promotion_history = resumed.promotion_history
+            self.expert = self._prepare_expert(expert_sources)
+            if self.league.get("asu_expert_sha256") != _file_sha256(self.expert_path):
+                raise ValueError("ASU expert data differs from the checkpointed run")
             self._recover_release()
         else:
+            self.expert = self._prepare_expert(expert_sources)
             self._bootstrap()
+
+    def _prepare_expert(
+        self,
+        sources: tuple[str | Path, ...],
+    ) -> dict[str, np.ndarray]:
+        if self.expert_path.exists():
+            return load_asu_examples((self.expert_path,))
+        if sources:
+            examples = load_asu_examples(sources)
+        else:
+            rollout_positions = (
+                min(
+                    self.config.training.asu_rollout_bootstrap_positions,
+                    self.config.training.bootstrap_games,
+                )
+                if self.config.max_rounds == 200
+                else 0
+            )
+            examples = collect_asu_examples(
+                games=self.config.training.bootstrap_games,
+                seed_base=self.config.seeds.bootstrap,
+                max_rounds=self.config.max_rounds,
+                rollout_positions=rollout_positions,
+            )
+        save_asu_examples(self.expert_path, examples)
+        return examples
 
     def _checkpoint(self, pending_replay: dict | None = None) -> Path:
         path = self.run_dir / "checkpoints" / f"generation_{self.generation:04d}.pt"
@@ -423,28 +712,46 @@ class Trainer:
     def _bootstrap(self) -> None:
         _seed_all(self.config.seeds.bootstrap)
         self.model.load_ppo_actor(self.bootstrap_ppo)
-        examples = collect_bootstrap_examples(
-            self.bootstrap_ppo,
-            games=self.config.training.bootstrap_games,
-            seed_base=self.config.seeds.bootstrap,
-            max_rounds=self.config.max_rounds,
-        )
-        stats = bootstrap_value_head(
+        stats = bootstrap_asu_expert(
             self.model,
             self.optimizer,
             self.scaler,
-            examples,
+            self.expert,
             updates=self.config.training.value_updates,
             batch_size=self.config.training.batch_size,
             gradient_clip=self.config.training.gradient_clip,
             seed=self.config.seeds.bootstrap + self.config.training.bootstrap_games,
         )
         incumbent = self.run_dir / "snapshots" / "promoted_0000.pt"
-        self.model.save_inference(incumbent, {"generation": 0, "bootstrap": True})
-        self.league = {"incumbent": str(incumbent.relative_to(self.run_dir)), "snapshots": [str(incumbent.relative_to(self.run_dir))], "status": "candidate"}
+        expert_hash = _file_sha256(self.expert_path)
+        self.model.save_inference(
+            incumbent,
+            {
+                "generation": 0,
+                "bootstrap": "asu_value_v1",
+                "asu_spec_hash": FROZEN_SPEC_HASH,
+                "asu_expert_sha256": expert_hash,
+            },
+        )
+        self.league = {
+            "incumbent": str(incumbent.relative_to(self.run_dir)),
+            "snapshots": [str(incumbent.relative_to(self.run_dir))],
+            "status": "candidate",
+            "asu_spec_hash": FROZEN_SPEC_HASH,
+            "asu_expert_sha256": expert_hash,
+        }
         _atomic_json(
             self.run_dir / "reports" / "bootstrap.json",
-            {"games": self.config.training.bootstrap_games, "positions": len(examples["states"]), "updates": self.config.training.value_updates, **stats},
+            {
+                "teacher": "asu_value_v1",
+                "asu_spec_hash": FROZEN_SPEC_HASH,
+                "asu_expert_sha256": expert_hash,
+                "games": self.config.training.bootstrap_games,
+                "positions": len(self.expert["states"]),
+                "rollout_positions": int(self.expert["teachers"].sum()),
+                "updates": self.config.training.value_updates,
+                **stats,
+            },
         )
         self._checkpoint()
 
@@ -471,6 +778,15 @@ class Trainer:
             if name != "indices"
         }
 
+    def _sample_expert_batch(
+        self,
+        batch_size: int,
+        rng: np.random.Generator,
+    ) -> dict[str, np.ndarray]:
+        count = len(self.expert["states"])
+        indices = rng.choice(count, size=min(batch_size, count), replace=False)
+        return {name: values[indices] for name, values in self.expert.items()}
+
     def _train_updates(
         self,
         batch_size: int,
@@ -478,18 +794,35 @@ class Trainer:
         generation: int,
     ) -> dict[str, float]:
         rng = np.random.default_rng(self.config.seeds.self_play + generation)
+        total_updates = self.config.training.updates_per_generation
+        decay = self.config.training.expert_decay_generations
+        expert_fraction = self.config.training.expert_fraction * max(
+            0.0,
+            1.0 - (generation - 1) / decay,
+        )
+        expert_updates = round(total_updates * expert_fraction)
         last = {}
-        for update in range(self.config.training.updates_per_generation):
+        for update in range(total_updates):
             if update % 10 == 0:
                 self.watchdog.check()
-            last = train_step(
+            use_expert = (
+                (update + 1) * expert_updates // total_updates
+                > update * expert_updates // total_updates
+            )
+            step = expert_train_step if use_expert else train_step
+            batch = (
+                self._sample_expert_batch(batch_size, rng)
+                if use_expert
+                else self._sample_training_batch(staging, batch_size, rng)
+            )
+            last = step(
                 self.model,
                 self.optimizer,
                 self.scaler,
-                self._sample_training_batch(staging, batch_size, rng),
+                batch,
                 self.config.training.gradient_clip,
             )
-        return last
+        return {**last, "expert_updates": float(expert_updates)}
 
     def _handoff(self, reason: str) -> None:
         checkpoint = self._checkpoint()
@@ -555,7 +888,13 @@ class Trainer:
 
         self.generation = next_generation
         candidate = self.run_dir / "candidates" / f"generation_{self.generation:04d}.pt"
-        self.model.save_inference(candidate, {"generation": self.generation, "status": "candidate"})
+        model_metadata = {
+            "generation": self.generation,
+            "status": "candidate",
+            "asu_spec_hash": FROZEN_SPEC_HASH,
+            "asu_expert_sha256": self.league["asu_expert_sha256"],
+        }
+        self.model.save_inference(candidate, model_metadata)
         from .ladder import evaluate_promotion
 
         incumbent = self.run_dir / self.league["incumbent"]
@@ -579,7 +918,10 @@ class Trainer:
         release_request = None
         if promoted:
             snapshot = self.run_dir / "snapshots" / f"promoted_{self.generation:04d}.pt"
-            self.model.save_inference(snapshot, {"generation": self.generation, "promoted": True})
+            self.model.save_inference(
+                snapshot,
+                {**model_metadata, "status": "promoted", "promoted": True},
+            )
             relative = str(snapshot.relative_to(self.run_dir))
             self.league["incumbent"] = relative
             self.league["snapshots"] = (

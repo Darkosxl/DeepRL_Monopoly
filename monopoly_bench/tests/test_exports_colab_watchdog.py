@@ -77,12 +77,17 @@ def test_resume_bundle_is_an_explicit_secret_free_allowlist(bench_tmp) -> None:
     (run_dir / "reports").mkdir(parents=True)
     (run_dir / "config.json").write_text("{}")
     (run_dir / "reports/generation.json").write_text("{}")
+    (run_dir / "asu_expert.npz").write_bytes(b"expert")
     (run_dir / ".env.local").write_text("TOKEN=secret")
     (run_dir / "credentials.json").write_text('{"token":"secret"}')
     bundle = build_resume_bundle(run_dir, bench_tmp / "resume.bundle")
     with tarfile.open(bundle, "r:gz") as archive:
         names = {member.name for member in archive.getmembers()}
-    assert names == {"run/config.json", "run/reports/generation.json"}
+    assert names == {
+        "run/asu_expert.npz",
+        "run/config.json",
+        "run/reports/generation.json",
+    }
 
 
 def test_watchdog_handoff_always_writes_a_portable_bundle(bench_tmp) -> None:

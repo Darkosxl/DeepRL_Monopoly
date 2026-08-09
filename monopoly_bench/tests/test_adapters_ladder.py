@@ -23,7 +23,7 @@ def test_every_repository_baseline_adapter_is_legal() -> None:
     baselines = available_baselines()
     assert set(baselines) == {
         "TheHoarder", "TheDealMaker", "TheGambler", "TheBuilder",
-        "TheBlocker", "TheRailBaron", "ppo_v2", "cfr_v2",
+        "TheBlocker", "TheRailBaron", "asu_value_v1", "ppo_v2", "cfr_v2",
     }
     legal = game.env.get_allowed_actions(actor)
     assert all(policy.choose_action(game, actor, 7).action in legal for policy in baselines.values())
@@ -73,6 +73,32 @@ def test_gate_runs_screen_then_full_with_gate_seeds(monkeypatch, bench_tmp) -> N
     report = run_gate(candidate, config=config)
     assert report["passed"] and report["label"] == "champion"
     assert calls == [(20, config.seeds.gate), (100, config.seeds.gate + 100_000)]
+
+
+def test_gate_adds_mixed_asu_matchup_and_rollout_screen(monkeypatch, bench_tmp) -> None:
+    import monopoly_bench.ladder as ladder
+
+    baselines = {
+        "asu_value_v1": object(),
+        "TheDealMaker": object(),
+        "TheGambler": object(),
+    }
+    monkeypatch.setattr(ladder, "available_baselines", lambda *args, **kwargs: baselines)
+    calls = []
+
+    def fake_evaluate(champion, baseline, *, games, config, seed_base):
+        calls.append((games, seed_base))
+        return _summary(games, games, 0.9, 0.1)
+
+    monkeypatch.setattr(ladder, "evaluate_baseline", fake_evaluate)
+    config = BenchmarkConfig()
+    candidate = bench_tmp / "candidate.pt"
+    MonopolyZeroNet().save_inference(candidate)
+    report = run_gate(candidate, config=config)
+    assert report["passed"] and report["asu_rollout_screen_passed"]
+    assert "mixed_asu_dealmaker_gambler" in report["available_baselines"]
+    assert (20, config.seeds.gate + 50_000) in calls
+    assert len(calls) == 9
 
 
 def test_only_a_model_bound_frozen_gate_can_make_an_immutable_release(monkeypatch, bench_tmp) -> None:

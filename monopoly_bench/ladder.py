@@ -8,7 +8,9 @@ import os
 from pathlib import Path
 import shutil
 
-from .adapters import SearchAdapter, available_baselines
+from ASU_FROZEN_TEACHER import FROZEN_SPEC_HASH
+
+from .adapters import ASUAdapter, SearchAdapter, available_baselines
 from .arena import balanced_single_seats, balanced_team_seats, play_game, summarize
 from .config import BenchmarkConfig
 from .contracts import MatchSummary
@@ -75,23 +77,27 @@ def evaluate_promotion(
 
 def evaluate_baseline(
     champion: str | Path,
-    baseline: object,
+    baseline: object | tuple[object, object, object],
     *,
     games: int,
     config: BenchmarkConfig,
     seed_base: int,
 ) -> MatchSummary:
     model = MonopolyZeroNet.load_inference(champion)
+    opponents = baseline if isinstance(baseline, tuple) else (baseline,) * 3
+    if len(opponents) != 3:
+        raise ValueError("A four-player baseline matchup needs three opponents")
     seats = balanced_single_seats(games)
     results = []
     for index, target in enumerate(seats):
         champion_seat = next(iter(target))
-        policies = {
-            seat: SearchAdapter(model, config.search, self_play=False)
-            if seat == champion_seat
-            else baseline
-            for seat in range(4)
-        }
+        policies = {champion_seat: SearchAdapter(model, config.search, self_play=False)}
+        policies.update(
+            zip(
+                (seat for seat in range(4) if seat != champion_seat),
+                opponents,
+            )
+        )
         results.append(
             play_game(
                 game_id=index,
@@ -124,9 +130,15 @@ def run_gate(
     champion = Path(champion)
     MonopolyZeroNet.load_inference(champion)
     baselines = available_baselines(ppo_checkpoint, cfr_checkpoint)
+    matchups = dict(baselines)
+    mixed_names = ("asu_value_v1", "TheDealMaker", "TheGambler")
+    if all(name in baselines for name in mixed_names):
+        matchups["mixed_asu_dealmaker_gambler"] = tuple(
+            baselines[name] for name in mixed_names
+        )
     screens = {}
     offset = 0
-    for name, baseline in baselines.items():
+    for name, baseline in matchups.items():
         summary = evaluate_baseline(
             champion,
             baseline,
@@ -143,10 +155,26 @@ def run_gate(
         for value in screens.values()
     )
 
+    rollout_required = "asu_value_v1" in baselines
+    rollout_screen = None
+    rollout_screen_passed = not rollout_required
+    if screen_passed and rollout_required:
+        summary = evaluate_baseline(
+            champion,
+            ASUAdapter(rollout=True),
+            games=config.gate.screen_games,
+            config=config,
+            seed_base=config.seeds.gate + 50_000,
+        )
+        rollout_screen = summary.as_dict()
+        rollout_screen_passed = (
+            _safe(summary) and summary.win_rate >= config.gate.screen_win_rate
+        )
+
     full = {}
-    if screen_passed:
+    if screen_passed and rollout_screen_passed:
         full_start = config.seeds.gate + 100_000
-        for index, (name, baseline) in enumerate(baselines.items()):
+        for index, (name, baseline) in enumerate(matchups.items()):
             summary = evaluate_baseline(
                 champion,
                 baseline,
@@ -155,7 +183,7 @@ def run_gate(
                 seed_base=full_start + index * config.gate.full_games,
             )
             full[name] = summary.as_dict()
-    passed = screen_passed and bool(full) and all(
+    passed = screen_passed and rollout_screen_passed and bool(full) and all(
         full_gate_passes(MatchSummary(**value), config) for value in full.values()
     )
     return {
@@ -164,15 +192,18 @@ def run_gate(
         "scope": "repository ppo-plus-v2 benchmark; not official or professional Monopoly",
         "candidate": str(champion.resolve()),
         "candidate_sha256": _sha256(champion),
+        "asu_spec_hash": FROZEN_SPEC_HASH,
         "config": config.as_dict(),
         "config_sha256": hashlib.sha256(
             json.dumps(config.as_dict(), separators=(",", ":"), sort_keys=True).encode()
         ).hexdigest(),
         "engine_hashes": engine_hashes(),
         "source_hashes": source_hashes(),
-        "available_baselines": list(baselines),
+        "available_baselines": list(matchups),
         "screens": screens,
         "screen_passed": screen_passed,
+        "asu_rollout_screen": rollout_screen,
+        "asu_rollout_screen_passed": rollout_screen_passed,
         "full": full,
         "passed": passed,
         "label": "champion" if passed else "candidate",
@@ -205,6 +236,8 @@ def freeze_release(
         and gate_report.get("passed") is True
         and gate_report.get("label") == "champion"
         and gate_report.get("candidate_sha256") == _sha256(candidate)
+        and gate_report.get("asu_spec_hash") == FROZEN_SPEC_HASH
+        and gate_report.get("asu_rollout_screen_passed") is True
         and gate_report.get("config") == config.as_dict()
         and gate_report.get("config_sha256") == expected_config_hash
         and gate_report.get("engine_hashes") == engine_hashes()
@@ -236,6 +269,7 @@ def freeze_release(
             "scope": gate_report["scope"],
             "model": model_path.name,
             "model_sha256": model_hash,
+            "asu_spec_hash": FROZEN_SPEC_HASH,
             "engine_hashes": engine_hashes(),
             "source_hashes": source_hashes(),
             "config": config.as_dict(),

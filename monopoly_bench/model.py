@@ -17,7 +17,7 @@ from .engine import (
     STATE_DIM,
     relative_to_physical,
 )
-from monopoly_drl.networks import ActorNetwork
+from monopoly_game_engine.networks import ActorNetwork
 
 
 class MonopolyZeroNet(nn.Module):
@@ -64,6 +64,12 @@ class MonopolyZeroNet(nn.Module):
         for parameter in (*self.trunk.parameters(), *self.policy_head.parameters()):
             parameter.requires_grad_(False)
         for parameter in self.value_head.parameters():
+            parameter.requires_grad_(True)
+
+    def freeze_trunk(self) -> None:
+        for parameter in self.trunk.parameters():
+            parameter.requires_grad_(False)
+        for parameter in (*self.policy_head.parameters(), *self.value_head.parameters()):
             parameter.requires_grad_(True)
 
     def unfreeze_all(self) -> None:
@@ -120,4 +126,3 @@ class MonopolyZeroNet(nn.Module):
         model.load_state_dict(payload["model"])
         model.eval()
         return model
-

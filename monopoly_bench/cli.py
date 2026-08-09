@@ -13,7 +13,7 @@ from .exports import export_teacher
 from .ladder import evaluate_promotion, gate_run_directory
 from .model import MonopolyZeroNet
 from .search import MaxNPUCT
-from .training import Trainer
+from .training import Trainer, collect_asu_examples, save_asu_examples
 
 
 DEFAULT_PPO = ROOT / "artifacts/ppo_plus/ppo_hybrid_2000_v2.pt"
@@ -68,6 +68,14 @@ def build_parser() -> argparse.ArgumentParser:
     train.add_argument("--generations", type=int, default=1)
     train.add_argument("--device", default="auto")
     train.add_argument("--fallback-colab", action="store_true")
+    train.add_argument("--asu-expert-data", nargs="*", default=())
+
+    collect_asu = subparsers.add_parser("collect-asu")
+    collect_asu.add_argument("--output", required=True)
+    collect_asu.add_argument("--games", type=int, required=True)
+    collect_asu.add_argument("--seed-base", type=int, required=True)
+    collect_asu.add_argument("--max-rounds", type=int, default=200)
+    collect_asu.add_argument("--rollout-positions", type=int, default=0)
 
     gate = subparsers.add_parser("gate")
     gate.add_argument("--run-dir", required=True)
@@ -94,8 +102,29 @@ def main(argv: list[str] | None = None) -> int:
             args.bootstrap_ppo,
             device=args.device,
             fallback_colab=args.fallback_colab,
+            asu_expert_data=args.asu_expert_data,
         ).run(args.generations)
         print(json.dumps(reports, indent=2, sort_keys=True))
+        return 0
+    if args.command == "collect-asu":
+        examples = collect_asu_examples(
+            games=args.games,
+            seed_base=args.seed_base,
+            max_rounds=args.max_rounds,
+            rollout_positions=args.rollout_positions,
+        )
+        destination = save_asu_examples(args.output, examples)
+        print(
+            json.dumps(
+                {
+                    "output": str(destination),
+                    "positions": len(examples["states"]),
+                    "rollout_positions": int(examples["teachers"].sum()),
+                },
+                indent=2,
+                sort_keys=True,
+            )
+        )
         return 0
     if args.command == "gate":
         report, release = gate_run_directory(args.run_dir)

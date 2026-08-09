@@ -14,6 +14,8 @@ from typing import Callable
 import numpy as np
 import torch
 
+from ASU_FROZEN_TEACHER import ASURolloutV1, ASUValueV1
+
 from .config import SearchConfig
 from .contracts import SearchResult
 from .engine import (
@@ -26,9 +28,9 @@ from .engine import (
 )
 from .model import MonopolyZeroNet
 from .search import MaxNPUCT
-from monopoly_drl.agent_ppo import fixed_accept_trade_decision, fixed_buy_decision
-from monopoly_drl.agents_fixed import FP_AGENT_CLASSES
-from monopoly_drl.networks import ActorNetwork
+from monopoly_game_engine.agent_ppo import fixed_accept_trade_decision, fixed_buy_decision
+from monopoly_game_engine.agents_fixed import FP_AGENT_CLASSES
+from monopoly_game_engine.networks import ActorNetwork
 
 
 @dataclass(frozen=True, slots=True)
@@ -53,6 +55,7 @@ class FixedAdapter:
             raise ValueError(f"Unknown fixed personality: {agent_class}")
         self.agent_class = agent_class
         self.name = agent_class.__name__
+        self.compatibility_fallbacks = 0
 
     def choose_action(self, game, player_id: int, decision_seed: int) -> ActionDecision:
         started = time.perf_counter()
@@ -63,6 +66,31 @@ class FixedAdapter:
             action = int(self.agent_class(player_id).choose_action(env))
         finally:
             random.setstate(outer)
+        legal = tuple(env.get_allowed_actions(player_id))
+        if action not in legal:
+            self.compatibility_fallbacks += 1
+            action = (
+                int(ActionType.END_TURN)
+                if int(ActionType.END_TURN) in legal
+                else legal[0]
+            )
+        return ActionDecision(action, time.perf_counter() - started)
+
+
+class ASUAdapter:
+    """Bind either frozen ASU policy to the benchmark policy contract."""
+
+    def __init__(self, *, rollout: bool = False):
+        self.agent_class = ASURolloutV1 if rollout else ASUValueV1
+        self.name = "asu_rollout_v1" if rollout else "asu_value_v1"
+        self._agents = {}
+
+    def choose_action(self, game, player_id: int, decision_seed: int) -> ActionDecision:
+        del decision_seed
+        started = time.perf_counter()
+        env = unwrap(game)
+        agent = self._agents.setdefault(player_id, self.agent_class(player_id))
+        action = int(agent.choose_action(env))
         if action not in env.get_allowed_actions(player_id):
             raise RuntimeError(f"{self.name} produced illegal action {action}")
         return ActionDecision(action, time.perf_counter() - started)
@@ -192,10 +220,15 @@ def fixed_baselines() -> dict[str, FixedAdapter]:
 def available_baselines(
     ppo_checkpoint: str | Path | None = None,
     cfr_checkpoint: str | Path | None = None,
+    *,
+    include_asu_rollout: bool = False,
 ) -> dict[str, object]:
     ppo_path = Path(ppo_checkpoint or ROOT / "artifacts/ppo_plus/ppo_hybrid_2000_v2.pt")
     cfr_path = Path(cfr_checkpoint or ROOT / "artifacts/cfr_ppo_plus/cfr_full_game_v2.pkl.gz")
     baselines: dict[str, object] = fixed_baselines()
+    baselines["asu_value_v1"] = ASUAdapter()
+    if include_asu_rollout:
+        baselines["asu_rollout_v1"] = ASUAdapter(rollout=True)
     if ppo_path.exists():
         baselines["ppo_v2"] = PPOAdapter(ppo_path)
     if cfr_path.exists():

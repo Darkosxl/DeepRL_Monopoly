@@ -41,8 +41,11 @@
   },
   "state_dim": 300,
   "training": {
+    "asu_rollout_bootstrap_positions": 64,
     "batch_size": 256,
     "bootstrap_games": 256,
+    "expert_decay_generations": 8,
+    "expert_fraction": 0.2,
     "games_per_generation": 32,
     "gradient_clip": 1.0,
     "learning_rate": 0.0003,

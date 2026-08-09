@@ -1,17 +1,10 @@
 from __future__ import annotations
 
 import random
-import sys
 import unittest
-from pathlib import Path
 from unittest.mock import patch
 
-
-ROOT = Path(__file__).resolve().parents[1]
-PPO_ROOT = ROOT / "RL_PPO(UNOFFICIAL)_MONOPOLY"
-sys.path.insert(0, str(PPO_ROOT))
-
-from monopoly_drl.actions import (  # noqa: E402
+from monopoly_game_engine.actions import (  # noqa: E402
     ACTION_SPACE_SIZE,
     OFFSETS,
     PROPERTY_IDS,
@@ -19,8 +12,8 @@ from monopoly_drl.actions import (  # noqa: E402
     ActionType,
     AuctionAction,
 )
-from monopoly_drl.agents_fixed import TheGambler, TheHoarder  # noqa: E402
-from monopoly_drl.env import (  # noqa: E402
+from monopoly_game_engine.agents_fixed import TheGambler, TheHoarder  # noqa: E402
+from monopoly_game_engine.env import (  # noqa: E402
     PHASE_AUCTION,
     PHASE_OUT_OF_TURN,
     PHASE_POST_ROLL,
@@ -87,7 +80,7 @@ class MonopolyRegressionTests(unittest.TestCase):
             self.env.get_allowed_actions(0), [int(ActionType.ROLL_DICE)]
         )
 
-        with patch("monopoly_drl.env.random.randint", side_effect=[1, 2]):
+        with patch("monopoly_game_engine.env.random.randint", side_effect=[1, 2]):
             self.env.step(int(ActionType.ROLL_DICE))
 
         self.assertEqual(self.env.players[0].position, 3)
@@ -108,7 +101,7 @@ class MonopolyRegressionTests(unittest.TestCase):
         self.env.phase = PHASE_POST_ROLL
         self.env.has_rolled = False
 
-        with patch("monopoly_drl.env.random.randint", side_effect=[1, 1]):
+        with patch("monopoly_game_engine.env.random.randint", side_effect=[1, 1]):
             _, _, _, info = self.env.step(int(ActionType.ROLL_DICE))
 
         self.assertEqual(self.env.players[0].position, 39)
@@ -149,13 +142,15 @@ class MonopolyRegressionTests(unittest.TestCase):
         self.env.has_rolled = False
 
         for _ in range(2):
-            with patch("monopoly_drl.env.random.randint", side_effect=[1, 1]):
+            with patch(
+                "monopoly_game_engine.env.random.randint", side_effect=[1, 1]
+            ):
                 self.env.step(int(ActionType.ROLL_DICE))
             self.env.step(int(ActionType.END_TURN))
             self.assertEqual(self.env.phase, PHASE_POST_ROLL)
             self.assertFalse(self.env.has_rolled)
 
-        with patch("monopoly_drl.env.random.randint", side_effect=[1, 1]):
+        with patch("monopoly_game_engine.env.random.randint", side_effect=[1, 1]):
             self.env.step(int(ActionType.ROLL_DICE))
 
         self.assertTrue(self.env.players[0].in_jail)
@@ -169,7 +164,7 @@ class MonopolyRegressionTests(unittest.TestCase):
         self.env.phase = PHASE_POST_ROLL
         self.env.has_rolled = False
 
-        with patch("monopoly_drl.env.random.randint", side_effect=[2, 2]):
+        with patch("monopoly_game_engine.env.random.randint", side_effect=[2, 2]):
             self.env.step(int(ActionType.ROLL_DICE))
 
         self.assertFalse(player.in_jail)
@@ -185,7 +180,7 @@ class MonopolyRegressionTests(unittest.TestCase):
         self.env.phase = PHASE_POST_ROLL
         self.env.has_rolled = False
 
-        with patch("monopoly_drl.env.random.randint", side_effect=[1, 1]):
+        with patch("monopoly_game_engine.env.random.randint", side_effect=[1, 1]):
             self.env.step(int(ActionType.ROLL_DICE))
 
         self.assertEqual(self.env.debt_amount, 30)
@@ -208,7 +203,7 @@ class MonopolyRegressionTests(unittest.TestCase):
         self.env.phase = PHASE_POST_ROLL
         self.env.has_rolled = False
 
-        with patch("monopoly_drl.env.random.randint", side_effect=[1, 1]):
+        with patch("monopoly_game_engine.env.random.randint", side_effect=[1, 1]):
             self.env.step(int(ActionType.ROLL_DICE))
 
         self.assertEqual(
