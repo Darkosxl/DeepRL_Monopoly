@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import hashlib
+import importlib.util
 import json
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -72,6 +74,7 @@ class Gemma4NotebookTests(unittest.TestCase):
             'member.name.endswith("/.env")',
             '"--gpu", "T4"',
             '"colab", "drivemount"',
+            '"colab", "ls"',
             '"colab", "exec"',
             '"colab", "stop"',
             'finally:',
@@ -79,6 +82,26 @@ class Gemma4NotebookTests(unittest.TestCase):
             'host_guard()',
         ):
             self.assertIn(value, source)
+
+    def test_launcher_rejects_colab_notebooks_with_hidden_cell_errors(self) -> None:
+        spec = importlib.util.spec_from_file_location("colab_runner", RUNNER)
+        runner = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(runner)
+        notebook = {
+            "cells": [{
+                "cell_type": "code",
+                "outputs": [{
+                    "output_type": "error",
+                    "ename": "RuntimeError",
+                    "evalue": "drive unavailable",
+                }],
+            }]
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "failed.ipynb"
+            path.write_text(json.dumps(notebook), encoding="utf-8")
+            with self.assertRaisesRegex(runner.GuardFailure, "drive unavailable"):
+                runner.validate_executed_notebook(path)
 
 
 if __name__ == "__main__":

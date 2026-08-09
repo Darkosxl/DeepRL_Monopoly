@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import shlex
 import shutil
@@ -105,6 +106,22 @@ def build_archive(destination: Path) -> None:
     os.replace(temporary, destination)
 
 
+def validate_executed_notebook(path: Path) -> None:
+    notebook = json.loads(path.read_text(encoding="utf-8"))
+    errors = [
+        output
+        for cell in notebook.get("cells", [])
+        for output in cell.get("outputs", [])
+        if output.get("output_type") == "error"
+    ]
+    if errors:
+        first = errors[0]
+        raise GuardFailure(
+            f"Notebook execution failed with {first.get('ename')}: "
+            f"{first.get('evalue')} ({len(errors)} error cell(s))"
+        )
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument("--session", default="gemma4-monopoly-pilot-v1")
@@ -121,7 +138,13 @@ def main() -> int:
     artifact_dir = ROOT / "artifacts" / "gemma4_monopoly_colab"
     artifact_dir.mkdir(parents=True, exist_ok=True)
 
+    interrupted = False
+
     def stop_on_signal(signum, _frame):
+        nonlocal interrupted
+        if interrupted:
+            return
+        interrupted = True
         raise KeyboardInterrupt(f"Received signal {signum}")
 
     signal.signal(signal.SIGTERM, stop_on_signal)
@@ -145,6 +168,10 @@ def main() -> int:
             run_guarded(
                 ["colab", "drivemount", "-s", args.session],
                 timeout=20 * 60,
+            )
+            run_guarded(
+                ["colab", "ls", "-s", args.session, "/content/drive/MyDrive"],
+                timeout=5 * 60,
             )
             run_guarded(
                 [
@@ -177,6 +204,7 @@ def main() -> int:
                 executed = stage_notebook.with_name(stage_notebook.stem + "_output.ipynb")
                 if not executed.exists():
                     raise GuardFailure(f"Colab did not export the executed {stage} notebook")
+                validate_executed_notebook(executed)
                 local_executed = artifact_dir / executed.name
                 shutil.copy2(executed, local_executed)
                 log_path = artifact_dir / f"{stage}_execution.md"
