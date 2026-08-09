@@ -23,6 +23,7 @@ COLAB_ASSETS = Path(__file__).parents[1] / "colab"
 def test_colab_notebooks_are_clean_parameterized_assets() -> None:
     expected = {
         "ASU_Expert_Shard.ipynb": "monopolyzero-asu-job.json",
+        "MonopolyZero_Evaluate.ipynb": "monopolyzero-evaluate-job.json",
         "MonopolyZero_Train.ipynb": "monopolyzero-train-job.json",
     }
     for name, parameter_file in expected.items():
