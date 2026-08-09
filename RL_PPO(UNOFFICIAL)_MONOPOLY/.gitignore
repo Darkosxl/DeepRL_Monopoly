@@ -1,0 +1,10 @@
+
+diff_log.txt
+game_log.txt
+Papers/
+train_history/
+monodoly_drl/_py-cache_/
+notebooks/
+plots/
+*.txt
+*.json
