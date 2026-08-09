@@ -128,6 +128,9 @@ JAIL_BAIL      = 50
 # Trade cash levels (fraction of purchase price)
 TRADE_CASH_LEVELS = [0.75, 1.0, 1.25] # Work To Do Here
 
+# PPO-plus auction actions bid above the current high bid by these amounts.
+AUCTION_BID_INCREMENTS = (1, 10, 50, 100)
+
 NUM_PLAYERS = 4 # Work To Do Here
 
 

@@ -20,7 +20,11 @@ We index each action with a unique integer and provide mappings.
 """
 
 from .constants import (
-    PROPERTY_IDS, REAL_ESTATE_IDS, NUM_PLAYERS, TRADE_CASH_LEVELS
+    AUCTION_BID_INCREMENTS,
+    NUM_PLAYERS,
+    PROPERTY_IDS,
+    REAL_ESTATE_IDS,
+    TRADE_CASH_LEVELS,
 )
 from enum import IntEnum
 
@@ -70,10 +74,25 @@ _o["sell_prop"]        = cur; cur += NUM_SELL_PROP
 _o["buy_trade"]        = cur; cur += NUM_BUY_TRADE_OFFER
 _o["sell_trade"]       = cur; cur += NUM_SELL_TRADE_OFFER
 _o["exch_trade"]       = cur; cur += NUM_EXCH_TRADE_OFFER
+_o["auction"]          = cur; cur += 1 + len(AUCTION_BID_INCREMENTS)
 
-ACTION_SPACE_SIZE = cur   # should be ~2922
+ACTION_SPACE_SIZE = cur
 
 OFFSETS = _o
+
+
+class AuctionAction(IntEnum):
+    PASS = OFFSETS["auction"]
+    BID_1 = PASS + 1
+    BID_10 = PASS + 2
+    BID_50 = PASS + 3
+    BID_100 = PASS + 4
+
+
+AUCTION_ACTION_TO_INCREMENT = {
+    AuctionAction(int(AuctionAction.PASS) + i + 1): amount
+    for i, amount in enumerate(AUCTION_BID_INCREMENTS)
+}
 
 
 def action_to_description(action_idx: int) -> str:
@@ -108,6 +127,11 @@ def action_to_description(action_idx: int) -> str:
                 return (f"exch_trade(player={player_idx}, "
                         f"offer={PROPERTY_IDS[offer_idx]}, "
                         f"req={PROPERTY_IDS[req_idx]})")
+            if name == "auction":
+                action = AuctionAction(action_idx)
+                if action == AuctionAction.PASS:
+                    return "auction_pass"
+                return f"auction_bid(+${AUCTION_ACTION_TO_INCREMENT[action]})"
             return f"{name}[{local}]"
     return f"UNKNOWN({action_idx})"
 
@@ -120,6 +144,4 @@ def _section_size(name: str) -> int:
                 return OFFSETS[keys[i+1]] - OFFSETS[name]
             return ACTION_SPACE_SIZE - OFFSETS[name]
     return 0
-
-
 

@@ -15,7 +15,14 @@ from typing import Dict, List, Optional
 
 import numpy as np
 
-from .actions import ACTION_SPACE_SIZE, OFFSETS, PROPERTY_IDS, ActionType
+from .actions import (
+    ACTION_SPACE_SIZE,
+    AUCTION_ACTION_TO_INCREMENT,
+    OFFSETS,
+    PROPERTY_IDS,
+    ActionType,
+    AuctionAction,
+)
 from .constants import (
     BOARD,
     COLOR_GROUPS,
@@ -65,6 +72,7 @@ class TradeOffer:
 PHASE_PRE_ROLL = "pre_roll"
 PHASE_POST_ROLL = "post_roll"
 PHASE_OUT_OF_TURN = "out_of_turn"
+PHASE_AUCTION = "auction"
 
 
 class MonopolyEnv:
@@ -101,6 +109,15 @@ class MonopolyEnv:
         self.phase = PHASE_PRE_ROLL
         self.has_rolled = False  # has the active player rolled this turn?
         self.out_of_turn_pids = []  # which players still get out-of-turn actions
+        self.consecutive_doubles = 0
+        self.extra_roll_pending = False
+
+        # Auction state. The landing player starts the bidding.
+        self.auction_property_id = None
+        self.auction_bidders = []
+        self.auction_current_pid = None
+        self.auction_high_bid = 0
+        self.auction_high_bidder = None
 
         # ── BUG 1 FIX: rescue flag ─────────────────────────────────────────
         # Set to a player's pid when they owe more than they have after paying
@@ -133,6 +150,8 @@ class MonopolyEnv:
         if self.phase == PHASE_OUT_OF_TURN:
             oot = self.current_out_of_turn_player()
             return oot if oot is not None else self.active_player_id()
+        if self.phase == PHASE_AUCTION and self.auction_current_pid is not None:
+            return self.auction_current_pid
         return self.active_player_id()
 
     def step(self, action_idx: int):
@@ -171,6 +190,15 @@ class MonopolyEnv:
 
         if player.bankrupt:
             return [int(ActionType.DO_NOTHING)]
+
+        if self.phase == PHASE_AUCTION:
+            if pid != self.auction_current_pid:
+                return [int(ActionType.DO_NOTHING)]
+            allowed = [int(AuctionAction.PASS)]
+            for action, increment in AUCTION_ACTION_TO_INCREMENT.items():
+                if self.auction_high_bid + increment <= player.cash:
+                    allowed.append(int(action))
+            return allowed
 
         # ── OUT-OF-TURN phase: non-active players ──────────────────────────
         if self.phase == PHASE_OUT_OF_TURN:
@@ -262,6 +290,10 @@ class MonopolyEnv:
     def _apply_action(self, pid: int, action_idx: int, info: dict):
         player = self.players[pid]
         active = self.active_player_id()
+
+        if self.phase == PHASE_AUCTION:
+            self._handle_auction_action(pid, action_idx, info)
+            return
 
         # ── BUG 1 FIX: clear rescue flag when debt is repaid ──────────────
         # After each action (sell house, mortgage, etc.) check whether the
@@ -407,6 +439,92 @@ class MonopolyEnv:
 
     # ── Turn / phase advancement ───────────────────────────────────────────────
 
+    def _start_out_of_turn(self):
+        active = self.active_player_id()
+        self.phase = PHASE_OUT_OF_TURN
+        self.out_of_turn_pids = [
+            p
+            for p in self.turn_order
+            if p != active and not self.players[p].bankrupt
+        ]
+        self.consecutive_doubles = 0
+        self.extra_roll_pending = False
+        if not self.out_of_turn_pids:
+            self._next_player()
+
+    def _start_auction(self, property_id: int):
+        active = self.active_player_id()
+        start = self.turn_order.index(active)
+        order = self.turn_order[start:] + self.turn_order[:start]
+        self.phase = PHASE_AUCTION
+        self.auction_property_id = property_id
+        self.auction_bidders = [
+            pid for pid in order if not self.players[pid].bankrupt
+        ]
+        self.auction_current_pid = self.auction_bidders[0]
+        self.auction_high_bid = 0
+        self.auction_high_bidder = None
+
+    def _handle_auction_action(self, pid: int, action_idx: int, info: dict):
+        if pid != self.auction_current_pid:
+            return
+
+        if action_idx == int(AuctionAction.PASS):
+            self.auction_bidders.remove(pid)
+            info["auction_pass"] = True
+        elif action_idx in {int(a) for a in AUCTION_ACTION_TO_INCREMENT}:
+            action = AuctionAction(action_idx)
+            increment = AUCTION_ACTION_TO_INCREMENT[action]
+            bid = self.auction_high_bid + increment
+            if bid > self.players[pid].cash:
+                return
+            self.auction_high_bid = bid
+            self.auction_high_bidder = pid
+            info["auction_bid"] = bid
+        else:
+            return
+
+        eligible = [
+            bidder
+            for bidder in self.auction_bidders
+            if bidder != self.auction_high_bidder
+        ]
+        if not eligible:
+            self._finish_auction(info)
+            return
+
+        start = self.turn_order.index(pid)
+        for offset in range(1, len(self.turn_order) + 1):
+            candidate = self.turn_order[(start + offset) % len(self.turn_order)]
+            if candidate in eligible:
+                self.auction_current_pid = candidate
+                return
+
+    def _finish_auction(self, info: dict):
+        if self.auction_high_bidder is not None:
+            winner = self.players[self.auction_high_bidder]
+            prop = self.properties[self.auction_property_id]
+            winner.cash -= self.auction_high_bid
+            prop.owner = winner.player_id
+            winner.properties.append(prop)
+            self._update_monopolies()
+            info["auction_winner"] = winner.player_id
+            info["auction_price"] = self.auction_high_bid
+
+        self.auction_property_id = None
+        self.auction_bidders = []
+        self.auction_current_pid = None
+        self.auction_high_bid = 0
+        self.auction_high_bidder = None
+
+        player = self.players[self.active_player_id()]
+        if self.extra_roll_pending and not player.in_jail:
+            self.extra_roll_pending = False
+            self.phase = PHASE_POST_ROLL
+            self.has_rolled = False
+        else:
+            self._start_out_of_turn()
+
     def _handle_end_turn(self, pid: int):
         active = self.active_player_id()
 
@@ -416,15 +534,16 @@ class MonopolyEnv:
             self.has_rolled = False
 
         elif self.phase == PHASE_POST_ROLL and pid == active:
-            # Done with this player's full turn — start out-of-turn for others
-            self.phase = PHASE_OUT_OF_TURN
-            self.out_of_turn_pids = [
-                p
-                for p in self.turn_order
-                if p != active and not self.players[p].bankrupt
-            ]
-            if not self.out_of_turn_pids:
-                self._next_player()
+            player = self.players[pid]
+            prop = self.properties.get(player.position)
+            if self.has_rolled and prop is not None and prop.owner is None:
+                self._start_auction(prop.square_id)
+            elif self.extra_roll_pending and not player.in_jail:
+                self.extra_roll_pending = False
+                self.phase = PHASE_POST_ROLL
+                self.has_rolled = False
+            else:
+                self._start_out_of_turn()
 
         elif self.phase == PHASE_OUT_OF_TURN:
             # This out-of-turn player is done
@@ -452,6 +571,8 @@ class MonopolyEnv:
         self.has_rolled = False
         self.out_of_turn_pids = []
         self.pending_trades = {}
+        self.consecutive_doubles = 0
+        self.extra_roll_pending = False
 
     def _advance_turn(self):
         """Force-advance (used when a bankrupt player is encountered)."""
@@ -473,8 +594,9 @@ class MonopolyEnv:
         info["dice"] = (d1, d2)
         self.has_rolled = True
 
-        # Jail handling
-        if player.in_jail:
+        # Jail handling. Doubles release the player but do not grant another roll.
+        was_in_jail = player.in_jail
+        if was_in_jail:
             player.jail_turns += 1
             if d1 == d2:
                 player.in_jail = False
@@ -486,6 +608,21 @@ class MonopolyEnv:
             else:
                 # Stay in jail — turn ends
                 return
+
+        if not was_in_jail and d1 == d2:
+            self.consecutive_doubles += 1
+            if self.consecutive_doubles >= 3:
+                player.position = JAIL_SQUARE
+                player.in_jail = True
+                player.jail_turns = 0
+                self.consecutive_doubles = 0
+                self.extra_roll_pending = False
+                info["three_doubles"] = True
+                return
+            self.extra_roll_pending = True
+        else:
+            self.consecutive_doubles = 0
+            self.extra_roll_pending = False
 
         # Move
         new_pos = (player.position + d1 + d2) % 40
@@ -506,6 +643,8 @@ class MonopolyEnv:
             player.position = JAIL_SQUARE
             player.in_jail = True
             player.jail_turns = 0
+            self.consecutive_doubles = 0
+            self.extra_roll_pending = False
             return
 
         if sq == INCOME_TAX_SQUARE:

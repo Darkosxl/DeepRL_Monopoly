@@ -11,8 +11,13 @@ ROOT = Path(__file__).resolve().parents[1]
 PPO_ROOT = ROOT / "RL_PPO(UNOFFICIAL)_MONOPOLY"
 sys.path.insert(0, str(PPO_ROOT))
 
-from monopoly_drl.actions import ACTION_SPACE_SIZE, ActionType  # noqa: E402
+from monopoly_drl.actions import (  # noqa: E402
+    ACTION_SPACE_SIZE,
+    ActionType,
+    AuctionAction,
+)
 from monopoly_drl.env import (  # noqa: E402
+    PHASE_AUCTION,
     PHASE_OUT_OF_TURN,
     PHASE_POST_ROLL,
     MonopolyEnv,
@@ -27,7 +32,7 @@ class MonopolyRegressionTests(unittest.TestCase):
         self.env.current_turn_idx = 0
 
     def test_public_dimensions(self) -> None:
-        self.assertEqual(ACTION_SPACE_SIZE, 2953)
+        self.assertEqual(ACTION_SPACE_SIZE, 2958)
         self.assertEqual(self.env._get_state(0).shape, (240,))
 
     def test_turn_sequence_and_property_purchase(self) -> None:
@@ -69,6 +74,56 @@ class MonopolyRegressionTests(unittest.TestCase):
         self.assertEqual(info["rent_paid"], 50)
         self.assertEqual(self.env.players[0].cash, 1450)
         self.assertEqual(self.env.players[1].cash, 1550)
+
+    def test_declined_property_runs_agent_auction(self) -> None:
+        self.env.phase = PHASE_POST_ROLL
+        self.env.has_rolled = True
+        self.env.players[0].position = 1
+
+        self.env.step(int(ActionType.END_TURN))
+        self.assertEqual(self.env.phase, PHASE_AUCTION)
+        self.assertEqual(self.env.whose_turn(), 0)
+
+        self.env.step(int(AuctionAction.BID_100))
+        for pid in (1, 2, 3):
+            self.assertEqual(self.env.whose_turn(), pid)
+            self.env.step(int(AuctionAction.PASS))
+
+        self.assertEqual(self.env.properties[1].owner, 0)
+        self.assertEqual(self.env.players[0].cash, 1400)
+        self.assertEqual(self.env.phase, PHASE_OUT_OF_TURN)
+
+    def test_three_consecutive_doubles_send_player_to_jail(self) -> None:
+        self.env.phase = PHASE_POST_ROLL
+        self.env.has_rolled = False
+
+        for _ in range(2):
+            with patch("monopoly_drl.env.random.randint", side_effect=[1, 1]):
+                self.env.step(int(ActionType.ROLL_DICE))
+            self.env.step(int(ActionType.END_TURN))
+            self.assertEqual(self.env.phase, PHASE_POST_ROLL)
+            self.assertFalse(self.env.has_rolled)
+
+        with patch("monopoly_drl.env.random.randint", side_effect=[1, 1]):
+            self.env.step(int(ActionType.ROLL_DICE))
+
+        self.assertTrue(self.env.players[0].in_jail)
+        self.assertEqual(self.env.players[0].position, 10)
+        self.assertFalse(self.env.extra_roll_pending)
+
+    def test_jail_doubles_release_without_extra_roll(self) -> None:
+        player = self.env.players[0]
+        player.position = 10
+        player.in_jail = True
+        self.env.phase = PHASE_POST_ROLL
+        self.env.has_rolled = False
+
+        with patch("monopoly_drl.env.random.randint", side_effect=[2, 2]):
+            self.env.step(int(ActionType.ROLL_DICE))
+
+        self.assertFalse(player.in_jail)
+        self.assertEqual(player.position, 14)
+        self.assertFalse(self.env.extra_roll_pending)
 
 
 if __name__ == "__main__":
