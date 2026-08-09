@@ -39,6 +39,8 @@ class Gemma4NotebookTests(unittest.TestCase):
             '"max_seq_length": 512',
             '"teacher_eval_games": 600',
             '"teacher_min_win_rate": 0.35',
+            'needs_evaluation = (',
+            'and not gate_is_current',
             '"rollouts_per_action": 4',
             '"rollout_horizon": 256',
             '"candidate_limit": 16',
