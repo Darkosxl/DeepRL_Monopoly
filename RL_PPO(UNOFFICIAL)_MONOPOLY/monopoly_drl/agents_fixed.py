@@ -21,7 +21,13 @@ learning agent faces meaningfully different opponents.
 import random
 from typing import List, Optional
 
-from .actions import OFFSETS, TRADE_CASH_LEVELS, ActionType
+from .actions import (
+    AUCTION_ACTION_TO_INCREMENT,
+    OFFSETS,
+    TRADE_CASH_LEVELS,
+    ActionType,
+    AuctionAction,
+)
 from .constants import (
     COLOR_GROUPS,
     JAIL_BAIL,
@@ -32,7 +38,7 @@ from .constants import (
     REAL_ESTATE_IDS,
     UTILITY_IDS,
 )
-from .env import MonopolyEnv, TradeOffer
+from .env import PHASE_AUCTION, MonopolyEnv, TradeOffer
 
 # ── Shared helpers ────────────────────────────────────────────────────────────
 
@@ -131,6 +137,9 @@ class FixedPolicyAgent:
         allowed = env.get_allowed_actions(self.player_id)
         player = env.players[self.player_id]
 
+        if env.phase == PHASE_AUCTION:
+            return self._auction_action(allowed, env)
+
         # 1. Respond to incoming trade first (highest priority)
         offer = _incoming_offer(env, self.player_id)
         if offer is not None:
@@ -173,6 +182,25 @@ class FixedPolicyAgent:
             return int(ActionType.ROLL_DICE)
 
         return int(ActionType.END_TURN)
+
+    def _auction_action(self, allowed: List[int], env: MonopolyEnv) -> int:
+        """Bid up to list price when this personality would buy the deed."""
+        prop = env.properties.get(env.auction_property_id)
+        player = env.players[self.player_id]
+        if prop is None or not self._should_buy(player, prop, env):
+            return int(AuctionAction.PASS)
+
+        bids = [
+            int(action)
+            for action, increment in AUCTION_ACTION_TO_INCREMENT.items()
+            if int(action) in allowed and env.auction_high_bid + increment <= prop.price
+        ]
+        if not bids:
+            return int(AuctionAction.PASS)
+        return max(
+            bids,
+            key=lambda action: AUCTION_ACTION_TO_INCREMENT[AuctionAction(action)],
+        )
 
     def _should_accept_trade(self, offer: TradeOffer, env: MonopolyEnv) -> bool:
         raise NotImplementedError

@@ -19,6 +19,7 @@ from monopoly_drl.actions import (  # noqa: E402
     ActionType,
     AuctionAction,
 )
+from monopoly_drl.agents_fixed import TheGambler, TheHoarder  # noqa: E402
 from monopoly_drl.env import (  # noqa: E402
     PHASE_AUCTION,
     PHASE_OUT_OF_TURN,
@@ -106,6 +107,16 @@ class MonopolyRegressionTests(unittest.TestCase):
         self.assertEqual(self.env.properties[1].owner, 0)
         self.assertEqual(self.env.players[0].cash, 1400)
         self.assertEqual(self.env.phase, PHASE_OUT_OF_TURN)
+
+    def test_fixed_agents_use_personality_during_auction(self) -> None:
+        self.env._start_auction(1)
+
+        self.assertEqual(
+            TheHoarder(0).choose_action(self.env), int(AuctionAction.PASS)
+        )
+        self.assertEqual(
+            TheGambler(0).choose_action(self.env), int(AuctionAction.BID_50)
+        )
 
     def test_three_consecutive_doubles_send_player_to_jail(self) -> None:
         self.env.phase = PHASE_POST_ROLL
