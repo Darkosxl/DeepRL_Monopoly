@@ -14,6 +14,7 @@ SLM = ROOT / "SLM_HANDMADE_MONOPOLY"
 GENERIC = SLM / "Gemma4_12B_15GB_Colab_QLoRA_Test.ipynb"
 PRIMARY = SLM / "Gemma4_12B_Monopoly_QLoRA.ipynb"
 RUNNER = SLM / "run_colab_pilot.py"
+DRIVE_SYNC = SLM / "drive_checkpoint_sync.py"
 
 
 class Gemma4NotebookTests(unittest.TestCase):
@@ -109,8 +110,12 @@ class Gemma4NotebookTests(unittest.TestCase):
             'RUN_NAME = "asu_pilot_v1"',
             '"--drive-checkpoints"',
             '"--hf-token-file"',
+            '"--rclone-config"',
+            '"--rclone-binary"',
             '"/content/.hf_token"',
             'Hugging Face authentication ready.',
+            'Google Drive rclone checkpoint sync started:',
+            'Google Drive training artifacts verified uploaded.',
             '/ "gemma4_monopoly_colab" / RUN_NAME',
             'ROOT / "SLM_HANDMADE_MONOPOLY" / "monopoly_qlora.py"',
             'ROOT / "ASU_FROZEN_TEACHER" / "core.py"',
@@ -124,9 +129,39 @@ class Gemma4NotebookTests(unittest.TestCase):
         spec.loader.exec_module(runner)
         self.assertEqual(runner.ARTIFACT_ROOT.name, "asu_pilot_v1")
         self.assertTrue(
-            {"monopoly_qlora.py", "core.py", "spec.py", "types.py"}
+            {"monopoly_qlora.py", "drive_checkpoint_sync.py", "core.py", "spec.py", "types.py"}
             <= {path.name for path in runner.PIPELINE_FILES}
         )
+
+    def test_drive_checkpoint_sync_compiles_and_has_transport_checks(self) -> None:
+        source = DRIVE_SYNC.read_text(encoding="utf-8")
+        compile(source, str(DRIVE_SYNC), "exec")
+        for value in (
+            'RCLONE_CONFIG.unlink(missing_ok=True)',
+            'adapter_model.safetensors',
+            '"--checksum"',
+            '"sha256": sha256(archive)',
+            'drive_sync_complete.json',
+        ):
+            self.assertIn(value, source)
+
+    def test_launcher_validates_private_rclone_inputs(self) -> None:
+        spec = importlib.util.spec_from_file_location("colab_runner_rclone", RUNNER)
+        runner = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(runner)
+        with tempfile.TemporaryDirectory() as directory:
+            config = Path(directory) / "rclone.conf"
+            binary = Path(directory) / "rclone"
+            config.write_text("[gemma_drive]\ntype = drive\n", encoding="utf-8")
+            config.chmod(0o600)
+            binary.write_bytes(b"binary")
+            self.assertEqual(
+                runner.validate_rclone_inputs(config, binary),
+                (config.resolve(), binary.resolve()),
+            )
+            config.chmod(0o644)
+            with self.assertRaisesRegex(runner.GuardFailure, "group or other"):
+                runner.validate_rclone_inputs(config, binary)
 
     def test_launcher_rejects_colab_notebooks_with_hidden_cell_errors(self) -> None:
         spec = importlib.util.spec_from_file_location("colab_runner", RUNNER)
