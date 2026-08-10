@@ -1,0 +1,74 @@
+
+============================================================
+  Algorithm : PPO
+  Mode      : Hybrid
+  Games     : 2000
+  Device    : auto
+  Save to   : artifacts/ppo_plus/ppo_hybrid_2000_v2.pt
+============================================================
+
+
+============================================================
+Training Hybrid PPO agent (player 0)
+Total games: 2000  |  Log every: 40
+============================================================
+  Game    40 | Win%:   0.0% | Props: 11.8 | Trades init/acc/dec: 114.7/9.9/39.7
+  Game    80 | Win%:   0.0% | Props: 12.6 | Trades init/acc/dec: 164.0/14.3/29.4
+  Game   120 | Win%:   0.0% | Props: 13.6 | Trades init/acc/dec: 134.8/13.1/42.6
+  Game   160 | Win%:   5.0% | Props: 15.3 | Trades init/acc/dec: 139.8/22.7/56.5
+  Game   200 | Win%:   0.0% | Props: 14.1 | Trades init/acc/dec: 160.5/15.4/35.2
+  Game   240 | Win%:   0.0% | Props: 12.8 | Trades init/acc/dec: 150.2/14.6/38.1
+  Game   280 | Win%:   0.0% | Props: 13.9 | Trades init/acc/dec: 157.9/13.0/42.4
+  Game   320 | Win%:   0.0% | Props: 14.1 | Trades init/acc/dec: 165.6/13.7/46.3
+  Game   360 | Win%:   0.0% | Props: 12.9 | Trades init/acc/dec: 154.5/15.2/54.0
+  Game   400 | Win%:   2.5% | Props: 12.8 | Trades init/acc/dec: 157.1/11.2/26.3
+  Game   440 | Win%:   2.5% | Props: 12.5 | Trades init/acc/dec: 152.2/11.7/44.0
+  Game   480 | Win%:   0.0% | Props: 13.2 | Trades init/acc/dec: 179.6/16.7/37.0
+  Game   520 | Win%:   0.0% | Props: 14.2 | Trades init/acc/dec: 136.8/16.1/45.6
+  Game   560 | Win%:   0.0% | Props: 13.0 | Trades init/acc/dec: 169.0/11.9/40.7
+  Game   600 | Win%:   0.0% | Props: 12.8 | Trades init/acc/dec: 177.1/12.8/40.8
+  Game   640 | Win%:   0.0% | Props: 13.8 | Trades init/acc/dec: 158.3/9.9/35.4
+  Game   680 | Win%:   0.0% | Props: 12.4 | Trades init/acc/dec: 157.6/9.8/40.6
+  Game   720 | Win%:   0.0% | Props: 12.2 | Trades init/acc/dec: 174.8/16.9/43.5
+  Game   760 | Win%:   0.0% | Props: 12.3 | Trades init/acc/dec: 165.4/13.7/41.7
+  Game   800 | Win%:   0.0% | Props: 11.8 | Trades init/acc/dec: 176.6/12.8/30.4
+  Game   840 | Win%:   0.0% | Props: 12.5 | Trades init/acc/dec: 152.3/12.4/37.4
+  Game   880 | Win%:   0.0% | Props: 12.8 | Trades init/acc/dec: 170.1/12.1/41.3
+  Game   920 | Win%:   0.0% | Props: 14.7 | Trades init/acc/dec: 166.8/13.8/44.0
+  Game   960 | Win%:   0.0% | Props: 13.3 | Trades init/acc/dec: 140.5/14.3/38.9
+  Game  1000 | Win%:   0.0% | Props: 15.3 | Trades init/acc/dec: 161.5/16.4/43.6
+  Game  1040 | Win%:   0.0% | Props: 13.1 | Trades init/acc/dec: 157.0/13.2/42.4
+  Game  1080 | Win%:   0.0% | Props: 12.7 | Trades init/acc/dec: 153.9/10.3/26.8
+  Game  1120 | Win%:   0.0% | Props: 14.0 | Trades init/acc/dec: 124.6/11.8/29.9
+  Game  1160 | Win%:   0.0% | Props: 14.0 | Trades init/acc/dec: 135.7/11.0/24.6
+  Game  1200 | Win%:   2.5% | Props: 12.9 | Trades init/acc/dec: 139.1/14.6/40.1
+  Game  1240 | Win%:   0.0% | Props: 13.0 | Trades init/acc/dec: 140.3/16.0/48.2
+  Game  1280 | Win%:   2.5% | Props: 14.1 | Trades init/acc/dec: 184.6/10.3/25.2
+  Game  1320 | Win%:   0.0% | Props: 14.9 | Trades init/acc/dec: 193.9/13.6/36.7
+  Game  1360 | Win%:   0.0% | Props: 12.9 | Trades init/acc/dec: 138.0/14.2/39.2
+  Game  1400 | Win%:   0.0% | Props: 15.2 | Trades init/acc/dec: 149.6/16.8/41.5
+  Game  1440 | Win%:   0.0% | Props: 13.1 | Trades init/acc/dec: 133.9/15.6/45.7
+  Game  1480 | Win%:   0.0% | Props: 12.9 | Trades init/acc/dec: 144.5/14.2/27.3
+  Game  1520 | Win%:   0.0% | Props: 13.0 | Trades init/acc/dec: 156.8/9.3/38.7
+  Game  1560 | Win%:   0.0% | Props: 13.3 | Trades init/acc/dec: 117.6/10.1/36.5
+  Game  1600 | Win%:   0.0% | Props: 12.1 | Trades init/acc/dec: 160.1/16.2/36.2
+  Game  1640 | Win%:   0.0% | Props: 11.7 | Trades init/acc/dec: 132.6/10.1/26.2
+  Game  1680 | Win%:   0.0% | Props: 11.9 | Trades init/acc/dec: 123.8/6.4/29.1
+  Game  1720 | Win%:   0.0% | Props: 14.2 | Trades init/acc/dec: 159.7/13.7/44.4
+  Game  1760 | Win%:   0.0% | Props: 14.2 | Trades init/acc/dec: 147.9/15.1/38.5
+  Game  1800 | Win%:   0.0% | Props: 12.8 | Trades init/acc/dec: 144.0/10.6/27.0
+  Game  1840 | Win%:   0.0% | Props: 13.7 | Trades init/acc/dec: 172.9/12.1/39.2
+  Game  1880 | Win%:   0.0% | Props: 12.7 | Trades init/acc/dec: 142.6/12.5/51.2
+  Game  1920 | Win%:   0.0% | Props: 13.3 | Trades init/acc/dec: 150.0/11.3/39.2
+  Game  1960 | Win%:   0.0% | Props: 13.6 | Trades init/acc/dec: 146.9/12.4/51.6
+  Game  2000 | Win%:   0.0% | Props: 13.6 | Trades init/acc/dec: 137.1/11.9/36.3
+
+Training complete in 4009.8s
+Games completed: 2000/2000
+Mean wall time: 2.005s/game
+Peak process RSS: 0.39 GiB
+Model saved to: artifacts/ppo_plus/ppo_hybrid_2000_v2.pt
+Training history saved to: artifacts/ppo_plus/ppo_hybrid_2000_v2_history.json
+
+Final win rate : 0.0%
+Best win rate  : 5.0%
