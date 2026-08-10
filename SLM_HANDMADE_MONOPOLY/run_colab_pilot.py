@@ -299,6 +299,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--stages", nargs="+", choices=STAGES, default=list(STAGES))
     parser.add_argument("--collection-progress", type=Path)
     parser.add_argument("--drive-checkpoints", action="store_true")
+    parser.add_argument("--hf-token-file", type=Path)
     parser.add_argument("--dry-run", action="store_true")
     return parser.parse_args()
 
@@ -344,6 +345,37 @@ def main() -> int:
                     ["colab", "drivemount", "-s", args.session, "/content/drive"],
                     timeout=15 * 60,
                     monitor_ram=False,
+                )
+                run_guarded(
+                    ["colab", "ls", "-s", args.session, "/content/drive/MyDrive"],
+                    timeout=2 * 60,
+                )
+            if args.hf_token_file is not None:
+                token_path = args.hf_token_file.resolve()
+                token = token_path.read_text(encoding="utf-8").strip()
+                if not token.startswith("hf_") or any(char.isspace() for char in token):
+                    raise GuardFailure("HF token file is invalid")
+                run_guarded(
+                    [
+                        "colab", "upload", "-s", args.session,
+                        str(token_path), "/content/.hf_token",
+                    ],
+                    timeout=5 * 60,
+                )
+                auth_script = temporary / "authenticate_hf.py"
+                auth_script.write_text(
+                    "from pathlib import Path\n"
+                    "from huggingface_hub import login\n"
+                    "path = Path('/content/.hf_token')\n"
+                    "login(token=path.read_text(encoding='utf-8').strip(), "
+                    "add_to_git_credential=False)\n"
+                    "path.unlink()\n"
+                    "print('Hugging Face authentication ready.')\n",
+                    encoding="utf-8",
+                )
+                run_guarded(
+                    ["colab", "exec", "-s", args.session, "-f", str(auth_script)],
+                    timeout=5 * 60,
                 )
             run_guarded(
                 [

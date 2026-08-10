@@ -74,6 +74,7 @@ class Gemma4NotebookTests(unittest.TestCase):
         for value in required:
             self.assertIn(value, source)
         self.assertIn('userdata.get("HF_TOKEN")', source)
+        self.assertIn('HF_TOKEN = get_token()', source)
         self.assertNotIn('os.getenv("HF_TOKEN")', source)
         self.assertIn('RUN_ROOT = Path("/content/asu_pilot_v1")', source)
         self.assertNotIn('drive.mount(', source)
@@ -107,6 +108,9 @@ class Gemma4NotebookTests(unittest.TestCase):
             'host_guard(min_ram_gib=min_ram_gib)',
             'RUN_NAME = "asu_pilot_v1"',
             '"--drive-checkpoints"',
+            '"--hf-token-file"',
+            '"/content/.hf_token"',
+            'Hugging Face authentication ready.',
             '/ "gemma4_monopoly_colab" / RUN_NAME',
             'ROOT / "SLM_HANDMADE_MONOPOLY" / "monopoly_qlora.py"',
             'ROOT / "ASU_FROZEN_TEACHER" / "core.py"',
