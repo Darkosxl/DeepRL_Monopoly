@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import gzip
 import json
 import os
 import shlex
@@ -250,11 +251,7 @@ def restore_snapshot(session: str, temporary: Path, artifact_dir: Path) -> None:
     )
 
 
-def validate_collection_progress(path: Path) -> None:
-    if path.name == ".env" or not path.is_file():
-        raise GuardFailure("Collection progress path is missing or unsafe")
-    with path.open(encoding="utf-8") as handle:
-        progress = json.load(handle)
+def validate_collection_progress_data(progress) -> None:
     required = {"fingerprint", "next_seed", "rows", "games"}
     if not isinstance(progress, dict) or required - progress.keys():
         raise GuardFailure("Collection progress has an invalid schema")
@@ -262,12 +259,35 @@ def validate_collection_progress(path: Path) -> None:
         raise GuardFailure("Collection progress has no resumable games")
 
 
-def upload_collection_progress(session: str, path: Path) -> None:
-    validate_collection_progress(path)
+def validate_collection_progress(path: Path) -> None:
+    if path.name == ".env" or not path.is_file():
+        raise GuardFailure("Collection progress path is missing or unsafe")
+    with path.open(encoding="utf-8") as handle:
+        validate_collection_progress_data(json.load(handle))
+
+
+def compress_collection_progress(path: Path, destination: Path) -> None:
+    if path.name == ".env" or not path.is_file():
+        raise GuardFailure("Collection progress path is missing or unsafe")
+    pending = destination.with_name(destination.name + ".tmp")
+    try:
+        with path.open("rb") as source, gzip.open(pending, "wb") as target:
+            shutil.copyfileobj(source, target)
+        with gzip.open(pending, "rt", encoding="utf-8") as handle:
+            validate_collection_progress_data(json.load(handle))
+        os.replace(pending, destination)
+    except BaseException:
+        pending.unlink(missing_ok=True)
+        raise
+
+
+def upload_collection_progress(session: str, path: Path, temporary: Path) -> None:
+    compressed = temporary / f"{RUN_NAME}_collection_progress.json.gz"
+    compress_collection_progress(path, compressed)
     run_guarded(
         [
-            "colab", "upload", "-s", session, str(path),
-            f"/content/{RUN_NAME}_collection_progress.json",
+            "colab", "upload", "-s", session, str(compressed),
+            f"/content/{RUN_NAME}_collection_progress.json.gz",
         ],
         timeout=3700,
     )
@@ -329,7 +349,9 @@ def main() -> int:
             if args.collection_progress is not None:
                 if "collect" not in args.stages:
                     raise GuardFailure("Collection progress requires the collect stage")
-                upload_collection_progress(args.session, args.collection_progress.resolve())
+                upload_collection_progress(
+                    args.session, args.collection_progress.resolve(), temporary
+                )
 
             for stage in args.stages:
                 stage_file = temporary / "monopoly_stage.txt"

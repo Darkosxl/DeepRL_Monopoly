@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import gzip
 import importlib.util
 import json
 import tempfile
@@ -170,9 +171,15 @@ class Gemma4NotebookTests(unittest.TestCase):
                 "games": [{"game_id": "g"}],
             }), encoding="utf-8")
             runner.validate_collection_progress(path)
+            compressed = Path(directory) / "collection_progress.json.gz"
+            runner.compress_collection_progress(path, compressed)
+            with gzip.open(compressed, "rt", encoding="utf-8") as handle:
+                self.assertEqual(json.load(handle)["next_seed"], 2)
             path.write_text("{}", encoding="utf-8")
             with self.assertRaisesRegex(runner.GuardFailure, "invalid schema"):
                 runner.validate_collection_progress(path)
+            with self.assertRaisesRegex(runner.GuardFailure, "invalid schema"):
+                runner.compress_collection_progress(path, compressed)
 
 
 if __name__ == "__main__":
