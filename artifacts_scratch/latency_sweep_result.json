@@ -1,0 +1,40 @@
+{
+  "decisions_per_setting": 60,
+  "gate_wall_s": 2.0,
+  "note": "Untrained MonopolyZeroNet (no local checkpoint); measures search/inference latency only.",
+  "settings": {
+    "32": {
+      "collection_wall_seconds": 4.629783399999724,
+      "count": 60,
+      "max_s": 0.14062490000105754,
+      "mean_s": 0.07692834666701552,
+      "min_s": 0.0513559000009991,
+      "p50_s": 0.07442875000106142,
+      "p95_s": 0.09760954499979553,
+      "p99_s": 0.13477516800056033,
+      "under_2s_wall": true
+    },
+    "64": {
+      "collection_wall_seconds": 9.430153799999971,
+      "count": 60,
+      "max_s": 0.22482959999979357,
+      "mean_s": 0.15692065000002914,
+      "min_s": 0.11656899999979942,
+      "p50_s": 0.1503006999992067,
+      "p95_s": 0.20462347999928168,
+      "p99_s": 0.21587263300019907,
+      "under_2s_wall": true
+    },
+    "128": {
+      "collection_wall_seconds": 21.125789499999883,
+      "count": 60,
+      "max_s": 0.4507277000011527,
+      "mean_s": 0.351862331666689,
+      "min_s": 0.2731264000012743,
+      "p50_s": 0.3448074499992799,
+      "p95_s": 0.41313896499932523,
+      "p99_s": 0.43260213300029127,
+      "under_2s_wall": true
+    }
+  }
+}
