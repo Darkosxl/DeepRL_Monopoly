@@ -26,6 +26,7 @@ def test_colab_notebooks_are_clean_parameterized_assets() -> None:
         "MonopolyZero_Evaluate.ipynb": "monopolyzero-evaluate-job.json",
         "MonopolyZero_Train.ipynb": "monopolyzero-train-job.json",
     }
+    sources = {}
     for name, parameter_file in expected.items():
         notebook = json.loads((COLAB_ASSETS / name).read_text())
         source = "".join(
@@ -33,6 +34,7 @@ def test_colab_notebooks_are_clean_parameterized_assets() -> None:
             for cell in notebook["cells"]
             for line in cell.get("source", ())
         )
+        sources[name] = source
         assert notebook["nbformat"] == 4
         assert parameter_file in source
         assert all(not cell.get("outputs") for cell in notebook["cells"])
@@ -40,6 +42,9 @@ def test_colab_notebooks_are_clean_parameterized_assets() -> None:
             if cell["cell_type"] == "code":
                 assert cell.get("execution_count") is None
                 compile("".join(cell["source"]), f"{name}:cell{index}", "exec")
+    assert "part.unlink(missing_ok=True)" in sources["ASU_Expert_Shard.ipynb"]
+    assert ".npz.part" in sources["ASU_Expert_Shard.ipynb"]
+    assert "int(JOB['workers']) * 4" in sources["ASU_Expert_Shard.ipynb"]
 
 
 def test_native_and_canonical_slm_exports(bench_tmp) -> None:
