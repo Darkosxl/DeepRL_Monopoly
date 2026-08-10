@@ -13,17 +13,22 @@ SLM_ROOT = ROOT / "SLM_HANDMADE_MONOPOLY"
 sys.path[:0] = [str(SLM_ROOT), str(ROOT)]
 
 from monopoly_game_engine.actions import ACTION_SPACE_SIZE, OFFSETS, PROPERTY_IDS, ActionType  # noqa: E402
-from monopoly_game_engine.env import MonopolyEnv  # noqa: E402
+from monopoly_game_engine.env import MonopolyEnv, TradeOffer  # noqa: E402
 from monopoly_qlora import (  # noqa: E402
     SCHEMA_VERSION,
+    SYSTEM_PROMPT,
     DecisionFormatError,
     action_to_json,
     asu_teacher_decision,
     asu_teacher_hash,
+    canonical_json,
     canonical_prompt,
+    canonical_state,
     collect_teacher_game,
+    compact_dataset_prompt,
     exploratory_behavior_action,
     fallback_action,
+    grouped_legal_actions,
     make_dataset_row,
     parse_action_json,
     play_model_game,
@@ -39,12 +44,45 @@ from monopoly_qlora import (  # noqa: E402
 
 
 class PrefixTokenizer:
-    def apply_chat_template(self, messages, *, tokenize, add_generation_prompt):
+    def apply_chat_template(
+        self, messages, *, tokenize, add_generation_prompt, return_dict
+    ):
         self.assert_tokenize = tokenize
+        self.assert_return_dict = return_dict
         text = "".join(f"<{item['role']}>{item['content']}" for item in messages)
         if add_generation_prompt:
             text += "<assistant>"
         return list(text.encode("utf-8"))
+
+
+class GemmaStyleTokenizer(PrefixTokenizer):
+    def apply_chat_template(
+        self, messages, *, tokenize, add_generation_prompt, return_dict
+    ):
+        tokens = super().apply_chat_template(
+            messages,
+            tokenize=tokenize,
+            add_generation_prompt=add_generation_prompt,
+            return_dict=return_dict,
+        )
+        if add_generation_prompt:
+            tokens.extend(b"<thought></thought>")
+        return tokens
+
+
+class EarlyDivergenceTokenizer(PrefixTokenizer):
+    def apply_chat_template(
+        self, messages, *, tokenize, add_generation_prompt, return_dict
+    ):
+        tokens = super().apply_chat_template(
+            messages,
+            tokenize=tokenize,
+            add_generation_prompt=add_generation_prompt,
+            return_dict=return_dict,
+        )
+        if add_generation_prompt:
+            tokens[1] += 1
+        return tokens
 
 
 class MonopolyQLoRAContractsTests(unittest.TestCase):
@@ -125,6 +163,27 @@ class MonopolyQLoRAContractsTests(unittest.TestCase):
         self.assertEqual(first, serialize_decision(rotated, 2))
         self.assertEqual(canonical_prompt(self.env, 0), canonical_prompt(rotated, 2))
 
+    def test_verbose_prompt_migration_matches_current_serializer(self) -> None:
+        self.give_property(1, 0)
+        self.give_property(3, 1)
+        payload = canonical_state(self.env, 0)
+        payload["legal"] = grouped_legal_actions(self.env, 0)
+        old_prompt = f"old header\n{canonical_json(payload)}"
+        migrated = compact_dataset_prompt(old_prompt)
+        self.assertEqual(migrated, f"{SYSTEM_PROMPT}\n{serialize_decision(self.env, 0)}")
+
+    def test_multiple_incoming_trades_are_seat_invariant(self) -> None:
+        self.env.pending_trades[1] = TradeOffer(1, 0, cash_offered=100)
+        self.env.pending_trades[3] = TradeOffer(3, 0, cash_offered=300)
+
+        rotated = MonopolyEnv(agent_ids=[2], max_rounds=5)
+        rotated.turn_order = [2, 3, 0, 1]
+        rotated.current_turn_idx = 0
+        rotated.pending_trades[3] = TradeOffer(3, 2, cash_offered=100)
+        rotated.pending_trades[1] = TradeOffer(1, 2, cash_offered=300)
+
+        self.assertEqual(serialize_decision(self.env, 0), serialize_decision(rotated, 2))
+
     def test_shortlist_keeps_teacher_mandatory_and_best_family_actions(self) -> None:
         legal = [
             int(ActionType.END_TURN),
@@ -151,6 +210,24 @@ class MonopolyQLoRAContractsTests(unittest.TestCase):
         self.assertIn(int(ActionType.ROLL_DICE), selected)
         self.assertIn(OFFSETS["mortgage"] + 1, selected)
         self.assertLessEqual(len(selected), 4)
+
+    def test_shortlist_caps_large_mandatory_liquidation_domains(self) -> None:
+        mortgages = [OFFSETS["mortgage"] + index for index in range(20)]
+        sell_property = OFFSETS["sell_prop"]
+        legal = mortgages + [sell_property]
+        scores = {action: float(index) for index, action in enumerate(legal)}
+        selected = shortlist_actions(
+            legal,
+            mortgages[0],
+            scores,
+            legal,
+            legal,
+            limit=16,
+        )
+        self.assertEqual(len(selected), 16)
+        self.assertEqual(selected[0], mortgages[0])
+        self.assertIn(mortgages[-1], selected)
+        self.assertIn(sell_property, selected)
 
     def test_asu_teacher_returns_legal_scored_candidates(self) -> None:
         self.env.phase = "post_roll"
@@ -339,6 +416,25 @@ class MonopolyQLoRAContractsTests(unittest.TestCase):
         self.assertEqual(len(boundary), 200)
         with self.assertRaisesRegex(ValueError, "overflow gate"):
             tokenize_rows([row], tokenizer, max_length=40)
+
+    def test_tokenizer_masks_gemma_generation_prompt_divergence(self) -> None:
+        row = {"prompt": "state", "completion": '{"action":"end_turn"}'}
+        tokenized = tokenize_rows([row], GemmaStyleTokenizer(), max_length=512)[0]
+        response_start = next(
+            index for index, label in enumerate(tokenized["labels"]) if label != -100
+        )
+        self.assertEqual(
+            bytes(tokenized["input_ids"][:response_start]), b"<user>state<assistant>"
+        )
+        self.assertEqual(
+            tokenized["labels"][response_start:],
+            tokenized["input_ids"][response_start:],
+        )
+
+    def test_tokenizer_rejects_divergence_inside_user_context(self) -> None:
+        row = {"prompt": "state", "completion": '{"action":"end_turn"}'}
+        with self.assertRaisesRegex(ValueError, "no usable response boundary"):
+            tokenize_rows([row], EarlyDivergenceTokenizer(), max_length=512)
 
 
 if __name__ == "__main__":

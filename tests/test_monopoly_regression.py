@@ -75,6 +75,24 @@ class MonopolyRegressionTests(unittest.TestCase):
         three_bidders = self.env._get_state(0)
         self.assertFalse((two_bidders == three_bidders).all())
 
+    def test_incoming_trade_priority_follows_relative_turn_order(self) -> None:
+        self.env.pending_trades[1] = TradeOffer(1, 0, cash_offered=100)
+        self.env.pending_trades[3] = TradeOffer(3, 0, cash_offered=300)
+        self.assertEqual(self.env._incoming_trade(0).cash_offered, 100)
+        self.env._do_accept_trade(0)
+        self.assertEqual(self.env.players[0].cash, 1600)
+        self.assertNotIn(1, self.env.pending_trades)
+        self.assertIn(3, self.env.pending_trades)
+
+        rotated = MonopolyEnv(agent_ids=[2], max_rounds=5)
+        rotated.turn_order = [2, 3, 0, 1]
+        rotated.pending_trades[3] = TradeOffer(3, 2, cash_offered=100)
+        rotated.pending_trades[1] = TradeOffer(1, 2, cash_offered=300)
+        self.assertEqual(rotated._incoming_trade(2).cash_offered, 100)
+        rotated.step(int(ActionType.DECLINE_TRADE))
+        self.assertNotIn(3, rotated.pending_trades)
+        self.assertIn(1, rotated.pending_trades)
+
     def test_turn_sequence_and_property_purchase(self) -> None:
         self.assertEqual(
             self.env.get_allowed_actions(0), [int(ActionType.END_TURN)]

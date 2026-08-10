@@ -56,8 +56,10 @@ PROPERTY_ACTIONS = {
     "sell_property": ("sell_prop", PROPERTY_IDS),
 }
 SYSTEM_PROMPT = (
-    "You are SELF in a four-player Monopoly game. Choose exactly one legal "
-    "action. Return one JSON object only: no rationale, markdown, or code fence."
+    "Monopoly: SELF=0 and OPPn=n. T=phase/round/active/rolled/dice; "
+    "PL seats=position/cash/worth/jail/turns/card/bankrupt (tail 0); "
+    "D=alias/owner/mortgage/houses:squares (@ joins). B/PR/BT/ST/X=legal "
+    "domains; trade max=75/100/125. Return legal JSON only."
 )
 
 
@@ -426,14 +428,212 @@ def canonical_state(env: MonopolyEnv, actor_pid: int) -> dict:
     }
 
 
+def compact_state_payload(payload: Mapping) -> dict:
+    """Remove repeated seat and legal-domain data without dropping choices."""
+    if "p" in payload:
+        return dict(payload)
+
+    seat_ids = {
+        player[0]: index for index, player in enumerate(payload["players"])
+    }
+    deed_groups: dict[tuple[int, int, int], list[int]] = defaultdict(list)
+    for square, owner, mortgaged, houses in payload["deeds"]:
+        deed_groups[(seat_ids[owner], mortgaged, houses)].append(square)
+
+    legal = payload["legal"]
+    compact_legal: dict[str, object] = {}
+    if legal.get("binary"):
+        compact_legal["binary"] = legal["binary"]
+    if legal.get("auction_bid"):
+        compact_legal["auction_bid"] = legal["auction_bid"]
+
+    property_domains: dict[tuple[int, ...], list[str]] = defaultdict(list)
+    for action in PROPERTY_ACTIONS:
+        if legal.get(action):
+            property_domains[tuple(legal[action])].append(action)
+    if property_domains:
+        compact_legal["property"] = [
+            [actions, list(squares)]
+            for squares, actions in sorted(
+                property_domains.items(), key=lambda item: item[1]
+            )
+        ]
+
+    for action in ("buy_trade", "sell_trade"):
+        entries = []
+        for target, price_domains in sorted(legal.get(action, {}).items()):
+            for prices, squares in sorted(
+                price_domains.items(),
+                key=lambda item: tuple(map(int, item[0].split(","))),
+            ):
+                entries.append([target, list(map(int, prices.split(","))), squares])
+        if entries:
+            compact_legal[action] = entries
+
+    exchange = legal.get("exchange_trade")
+    if exchange:
+        offer_domains = {tuple(domain["offer"]) for domain in exchange.values()}
+        if len(offer_domains) != 1:
+            raise ValueError("Exchange targets have inconsistent offer domains")
+        compact_legal["exchange_trade"] = [
+            list(next(iter(offer_domains))),
+            [[target, domain["request"]] for target, domain in sorted(exchange.items())],
+        ]
+
+    turn = [
+        payload["phase"],
+        payload["round"],
+        payload["active"],
+        payload["rolled"],
+        *payload["dice"],
+    ]
+    compact = {
+        "turn": turn,
+        "bank": payload["supply"],
+        "p": [player[1:] for player in payload["players"]],
+        "d": [
+            [owner, mortgaged, houses, squares]
+            for (owner, mortgaged, houses), squares in sorted(deed_groups.items())
+        ],
+        "legal": compact_legal,
+    }
+    if payload["debt"][0]:
+        compact["debt"] = payload["debt"]
+    if payload["trade"] is not None:
+        trade = payload["trade"]
+        compact["trade"] = [
+            trade["from"], trade["offer"], trade["request"],
+            trade["cash_offer"], trade["cash_request"],
+        ]
+    if payload["auction"] is not None:
+        auction = payload["auction"]
+        compact["auction"] = [
+            auction["square"], auction["high_bid"],
+            auction["leader"], auction["bidders"],
+        ]
+    return compact
+
+
+def compact_payload_text(payload: Mapping) -> str:
+    """Encode the compact public state and complete legal domains as a small DSL."""
+    seats = {"SELF": 0, "OPP1": 1, "OPP2": 2, "OPP3": 3, None: "-"}
+
+    def joined(values, separator="/"):
+        return separator.join(str(seats.get(value, value)) for value in values)
+
+    turn = list(payload["turn"])
+    turn[2] = seats[turn[2]]
+    if not turn[3]:
+        turn = turn[:4]
+    while len(turn) > 2 and turn[-1] == 0:
+        turn.pop()
+    lines = [f"T={joined(turn)}", f"K={joined(payload['bank'])}"]
+
+    players = []
+    for values in payload["p"]:
+        values = list(values)
+        while len(values) > 3 and values[-1] == 0:
+            values.pop()
+        players.append(joined(values))
+    lines.append(f"PL={';'.join(players)}")
+    deed_aliases = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"
+    if len(payload["d"]) > len(deed_aliases):
+        raise ValueError("Too many deed domains for the compact serializer")
+    deed_domains = [set(group[3]) for group in payload["d"]]
+
+    def domain(squares):
+        wanted = set(squares)
+        references = [
+            deed_aliases[index]
+            for index, values in enumerate(deed_domains)
+            if values and values <= wanted
+        ]
+        covered = set().union(
+            *(deed_domains[deed_aliases.index(alias)] for alias in references)
+        ) if references else set()
+        return (
+            "@" + "".join(references)
+            if covered == wanted
+            else joined(squares, ",")
+        )
+
+    def max_price(prices):
+        if tuple(prices) != PRICE_PCTS[: len(prices)]:
+            raise ValueError("Trade price domain is not a standard prefix")
+        return prices[-1]
+
+    lines.append(
+        "D=" + ";".join(
+            f"{deed_aliases[index]}={joined(group[:3])}:{joined(group[3], ',')}"
+            for index, group in enumerate(payload["d"])
+        )
+    )
+    if "debt" in payload:
+        lines.append(f"DE={joined(payload['debt'])}")
+    if "trade" in payload:
+        lines.append(f"TR={joined(payload['trade'])}")
+    if "auction" in payload:
+        auction = list(payload["auction"])
+        auction[2] = seats[auction[2]]
+        auction[3] = joined(auction[3], ",")
+        lines.append(f"AU={joined(auction)}")
+
+    legal = payload["legal"]
+    if "binary" in legal:
+        lines.append(f"B={joined(legal['binary'], ',')}")
+    if "auction_bid" in legal:
+        lines.append(f"AB={joined(legal['auction_bid'], ',')}")
+    if "property" in legal:
+        lines.append(
+            "PR=" + ";".join(
+                f"{joined(actions, '+')}:{domain(squares)}"
+                for actions, squares in legal["property"]
+            )
+        )
+    for action, label in (("buy_trade", "BT"), ("sell_trade", "ST")):
+        if action in legal:
+            target_domains: dict[str, list[tuple[int, str]]] = defaultdict(list)
+            for target, prices, squares in legal[action]:
+                target_domains[target].append((max_price(prices), domain(squares)))
+            shared_domains: dict[tuple[tuple[int, str], ...], list[str]] = defaultdict(list)
+            for target, entries in target_domains.items():
+                shared_domains[tuple(entries)].append(target)
+            lines.append(
+                label + "=" + ";".join(
+                    "+".join(str(seats[target]) for target in targets)
+                    + "/"
+                    + "|".join(f"{price}:{squares}" for price, squares in entries)
+                    for entries, targets in shared_domains.items()
+                )
+            )
+    if "exchange_trade" in legal:
+        offers, requests = legal["exchange_trade"]
+        lines.append(
+            f"X={domain(offers)}:" + ";".join(
+                f"{seats[target]}={domain(squares)}"
+                for target, squares in requests
+            )
+        )
+    return "\n".join(lines)
+
+
 def serialize_decision(env: MonopolyEnv, actor_pid: int) -> str:
     payload = canonical_state(env, actor_pid)
     payload["legal"] = grouped_legal_actions(env, actor_pid)
-    return canonical_json(payload)
+    return compact_payload_text(compact_state_payload(payload))
 
 
 def canonical_prompt(env: MonopolyEnv, actor_pid: int) -> str:
     return f"{SYSTEM_PROMPT}\n{serialize_decision(env, actor_pid)}"
+
+
+def compact_dataset_prompt(prompt: str) -> str:
+    """Upgrade a saved verbose prompt to the current lossless compact form."""
+    _, serialized = prompt.split("\n", 1)
+    if not serialized.startswith("{"):
+        return prompt
+    payload = compact_state_payload(json.loads(serialized))
+    return f"{SYSTEM_PROMPT}\n{compact_payload_text(payload)}"
 
 
 def shortlist_actions(
@@ -444,6 +644,8 @@ def shortlist_actions(
     mandatory_actions: Sequence[int],
     limit: int = 16,
 ) -> list[int]:
+    if limit < 1:
+        raise ValueError("Candidate limit must be positive")
     legal = list(dict.fromkeys(int(action) for action in legal_actions))
     if teacher_action not in legal:
         raise ValueError("Teacher action must be legal")
@@ -451,20 +653,26 @@ def shortlist_actions(
     if teacher_action not in pool:
         pool.insert(0, teacher_action)
     selected = [teacher_action]
-    selected.extend(
-        action
-        for action in dict.fromkeys(int(item) for item in mandatory_actions)
-        if action in pool and action not in selected
-    )
-    if limit < len(selected):
-        raise ValueError("Candidate limit cannot drop a mandatory ASU action")
-    by_family: dict[str, list[int]] = defaultdict(list)
-    for action in pool:
-        by_family[action_family(action)].append(action)
-    for family in sorted(by_family):
-        best = max(by_family[family], key=lambda action: (scores[action], -action))
-        if best not in selected:
-            selected.append(best)
+
+    def add_family_representatives(actions: Iterable[int]) -> None:
+        by_family: dict[str, list[int]] = defaultdict(list)
+        for action in actions:
+            if action in pool:
+                by_family[action_family(action)].append(action)
+        representatives = (
+            max(actions, key=lambda action: (scores[action], -action))
+            for actions in by_family.values()
+        )
+        for action in sorted(
+            representatives, key=lambda action: (-scores[action], action)
+        ):
+            if len(selected) >= limit:
+                return
+            if action not in selected:
+                selected.append(action)
+
+    add_family_representatives(dict.fromkeys(int(item) for item in mandatory_actions))
+    add_family_representatives(pool)
     remaining = sorted(
         (action for action in pool if action not in selected),
         key=lambda action: (-scores[action], action),
@@ -818,14 +1026,34 @@ def tokenize_rows(rows: Sequence[dict], tokenizer, max_length: int = 512) -> lis
             {"role": "assistant", "content": row["completion"]}
         ]
         prompt_ids = tokenizer.apply_chat_template(
-            prompt_messages, tokenize=True, add_generation_prompt=True
+            prompt_messages,
+            tokenize=True,
+            add_generation_prompt=True,
+            return_dict=False,
+        )
+        context_ids = tokenizer.apply_chat_template(
+            prompt_messages,
+            tokenize=True,
+            add_generation_prompt=False,
+            return_dict=False,
         )
         input_ids = tokenizer.apply_chat_template(
-            full_messages, tokenize=True, add_generation_prompt=False
+            full_messages,
+            tokenize=True,
+            add_generation_prompt=False,
+            return_dict=False,
         )
-        if input_ids[: len(prompt_ids)] != prompt_ids:
-            raise ValueError("Tokenizer chat template does not preserve the prompt prefix")
-        labels = [-100] * len(prompt_ids) + input_ids[len(prompt_ids) :]
+        prefix_length = 0
+        for prompt_token, input_token in zip(prompt_ids, input_ids):
+            if prompt_token != input_token:
+                break
+            prefix_length += 1
+        if (
+            input_ids[: len(context_ids)] != context_ids
+            or prefix_length < len(context_ids)
+        ):
+            raise ValueError("Tokenizer chat template has no usable response boundary")
+        labels = [-100] * prefix_length + input_ids[prefix_length:]
         if len(input_ids) > max_length:
             overlong += 1
         item = dict(row)
