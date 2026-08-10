@@ -298,6 +298,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--session", default="gemma4-monopoly-asu-v1")
     parser.add_argument("--stages", nargs="+", choices=STAGES, default=list(STAGES))
     parser.add_argument("--collection-progress", type=Path)
+    parser.add_argument("--drive-checkpoints", action="store_true")
     parser.add_argument("--dry-run", action="store_true")
     return parser.parse_args()
 
@@ -338,6 +339,12 @@ def main() -> int:
                 ["colab", "new", "-s", args.session, "--gpu", "T4"],
                 timeout=20 * 60,
             )
+            if args.drive_checkpoints:
+                run_guarded(
+                    ["colab", "drivemount", "-s", args.session, "/content/drive"],
+                    timeout=15 * 60,
+                    monitor_ram=False,
+                )
             run_guarded(
                 [
                     "colab", "upload", "-s", args.session,

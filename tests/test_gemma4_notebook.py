@@ -81,6 +81,12 @@ class Gemma4NotebookTests(unittest.TestCase):
         self.assertNotIn('ppo_plus_v2_teacher.pt', source)
         self.assertNotIn('teacher_checkpoint_hash', source)
         self.assertNotIn('heuristic_teacher(', source)
+        self.assertIn('DRIVE_ADAPTER_DIR / "checkpoints"', source)
+        self.assertIn(
+            'checkpoint_fingerprint = checkpoint_dir / "checkpoint_fingerprint.json"',
+            source,
+        )
+        self.assertIn('Google Drive artifact hash mismatch', source)
 
     def test_launcher_has_hard_guards_secret_free_archive_and_final_cleanup(self) -> None:
         source = RUNNER.read_text(encoding="utf-8")
@@ -91,6 +97,7 @@ class Gemma4NotebookTests(unittest.TestCase):
             '"colab", "ls"',
             '"colab", "exec"',
             '"colab", "download"',
+            '"colab", "drivemount"',
             '"colab", "stop"',
             'finally:',
             'min_ram_gib: float = 1.0',
@@ -99,6 +106,7 @@ class Gemma4NotebookTests(unittest.TestCase):
             'os.killpg(process.pid, signal.SIGTERM)',
             'host_guard(min_ram_gib=min_ram_gib)',
             'RUN_NAME = "asu_pilot_v1"',
+            '"--drive-checkpoints"',
             '/ "gemma4_monopoly_colab" / RUN_NAME',
             'ROOT / "SLM_HANDMADE_MONOPOLY" / "monopoly_qlora.py"',
             'ROOT / "ASU_FROZEN_TEACHER" / "core.py"',
