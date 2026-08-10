@@ -157,6 +157,23 @@ class Gemma4NotebookTests(unittest.TestCase):
             with self.assertRaisesRegex(runner.GuardFailure, "Unsafe"):
                 runner.validate_snapshot(unsafe)
 
+    def test_launcher_validates_local_collection_progress(self) -> None:
+        spec = importlib.util.spec_from_file_location("colab_runner_progress", RUNNER)
+        runner = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(runner)
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "collection_progress.json"
+            path.write_text(json.dumps({
+                "fingerprint": "old",
+                "next_seed": 2,
+                "rows": [{"state_hash": "x"}],
+                "games": [{"game_id": "g"}],
+            }), encoding="utf-8")
+            runner.validate_collection_progress(path)
+            path.write_text("{}", encoding="utf-8")
+            with self.assertRaisesRegex(runner.GuardFailure, "invalid schema"):
+                runner.validate_collection_progress(path)
+
 
 if __name__ == "__main__":
     unittest.main()

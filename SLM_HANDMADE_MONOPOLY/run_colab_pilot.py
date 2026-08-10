@@ -250,10 +250,34 @@ def restore_snapshot(session: str, temporary: Path, artifact_dir: Path) -> None:
     )
 
 
+def validate_collection_progress(path: Path) -> None:
+    if path.name == ".env" or not path.is_file():
+        raise GuardFailure("Collection progress path is missing or unsafe")
+    with path.open(encoding="utf-8") as handle:
+        progress = json.load(handle)
+    required = {"fingerprint", "next_seed", "rows", "games"}
+    if not isinstance(progress, dict) or required - progress.keys():
+        raise GuardFailure("Collection progress has an invalid schema")
+    if not progress["rows"] or not progress["games"]:
+        raise GuardFailure("Collection progress has no resumable games")
+
+
+def upload_collection_progress(session: str, path: Path) -> None:
+    validate_collection_progress(path)
+    run_guarded(
+        [
+            "colab", "upload", "-s", session, str(path),
+            f"/content/{RUN_NAME}_collection_progress.json",
+        ],
+        timeout=3700,
+    )
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument("--session", default="gemma4-monopoly-asu-v1")
     parser.add_argument("--stages", nargs="+", choices=STAGES, default=list(STAGES))
+    parser.add_argument("--collection-progress", type=Path)
     parser.add_argument("--dry-run", action="store_true")
     return parser.parse_args()
 
@@ -302,6 +326,10 @@ def main() -> int:
                 timeout=20 * 60,
             )
             restore_snapshot(args.session, temporary, artifact_dir)
+            if args.collection_progress is not None:
+                if "collect" not in args.stages:
+                    raise GuardFailure("Collection progress requires the collect stage")
+                upload_collection_progress(args.session, args.collection_progress.resolve())
 
             for stage in args.stages:
                 stage_file = temporary / "monopoly_stage.txt"

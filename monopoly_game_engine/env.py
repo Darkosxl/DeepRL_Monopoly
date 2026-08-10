@@ -346,11 +346,9 @@ class MonopolyEnv:
                 self._do_accept_trade(pid)
 
             elif atype == ActionType.DECLINE_TRADE:
-                # Remove the offer directed at this player
-                for sid in sorted(self.pending_trades):
-                    if self.pending_trades[sid].to_player == pid:
-                        del self.pending_trades[sid]
-                        break
+                pending = self._incoming_trade_entry(pid)
+                if pending is not None:
+                    del self.pending_trades[pending[0]]
 
             return
 
@@ -783,16 +781,10 @@ class MonopolyEnv:
             self.player_needs_funds = None
 
     def _do_accept_trade(self, pid: int):
-        offer = None
-        sender = None
-        for sid in sorted(self.pending_trades):
-            o = self.pending_trades[sid]
-            if o.to_player == pid:
-                offer = o
-                sender = sid
-                break
-        if offer is None:
+        pending = self._incoming_trade_entry(pid)
+        if pending is None:
             return
+        sender, offer = pending
         del self.pending_trades[sender]
 
         s = self.players[sender]
@@ -1021,12 +1013,18 @@ class MonopolyEnv:
                     )
         return allowed
 
-    def _incoming_trade(self, pid: int) -> Optional[TradeOffer]:
-        for sender in sorted(self.pending_trades):
-            o = self.pending_trades[sender]
-            if o.to_player == pid:
-                return o
+    def _incoming_trade_entry(self, pid: int) -> Optional[tuple[int, TradeOffer]]:
+        start = self.turn_order.index(pid)
+        for offset in range(1, len(self.turn_order)):
+            sender = self.turn_order[(start + offset) % len(self.turn_order)]
+            offer = self.pending_trades.get(sender)
+            if offer is not None and offer.to_player == pid:
+                return sender, offer
         return None
+
+    def _incoming_trade(self, pid: int) -> Optional[TradeOffer]:
+        pending = self._incoming_trade_entry(pid)
+        return None if pending is None else pending[1]
 
     # ── Reward & game-over ─────────────────────────────────────────────────────
 
