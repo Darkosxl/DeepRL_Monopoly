@@ -382,6 +382,7 @@ class MonopolyEnv:
                 and prop.is_monopoly
                 and not prop.mortgaged
                 and prop.houses < MAX_HOUSES
+                and self._is_least_developed(prop)
                 and self.houses_available > 0
                 and player.can_afford(hp)
             ):
@@ -400,6 +401,7 @@ class MonopolyEnv:
                 and prop.is_monopoly
                 and not prop.mortgaged
                 and prop.houses == MAX_HOUSES
+                and self._is_least_developed(prop)
                 and self.hotels_available > 0
                 and player.can_afford(hp)
             ):
@@ -895,6 +897,11 @@ class MonopolyEnv:
 
     # ── Helpers for allowed actions ────────────────────────────────────────────
 
+    def _is_least_developed(self, prop: Property) -> bool:
+        return prop.houses == min(
+            self.properties[sq].houses for sq in COLOR_GROUPS[prop.color]
+        )
+
     def _mortgage_actions(self, pid: int) -> List[int]:
         player = self.players[pid]
         allowed = []
@@ -920,6 +927,7 @@ class MonopolyEnv:
                 prop.is_monopoly
                 and not prop.mortgaged
                 and prop.houses < MAX_HOUSES
+                and self._is_least_developed(prop)
                 and self.houses_available > 0
                 and player.can_afford(hp)
             ):
@@ -928,6 +936,7 @@ class MonopolyEnv:
                 prop.is_monopoly
                 and not prop.mortgaged
                 and prop.houses == MAX_HOUSES
+                and self._is_least_developed(prop)
                 and self.hotels_available > 0
                 and player.can_afford(hp)
             ):

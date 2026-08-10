@@ -1,8 +1,14 @@
 from __future__ import annotations
 
 import random
+import sys
 import unittest
+from pathlib import Path
 from unittest.mock import patch
+
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
 
 from monopoly_game_engine.actions import (  # noqa: E402
     ACTION_SPACE_SIZE,
@@ -239,6 +245,7 @@ class MonopolyRegressionTests(unittest.TestCase):
         self.give_property(1, 0)
         self.give_property(3, 0)
         prop = self.env.properties[1]
+        sibling = self.env.properties[3]
         house_action = OFFSETS["improve_house"] + REAL_ESTATE_IDS.index(1)
         hotel_action = OFFSETS["improve_hotel"] + REAL_ESTATE_IDS.index(1)
         sell_hotel_action = OFFSETS["sell_hotel"] + REAL_ESTATE_IDS.index(1)
@@ -250,6 +257,7 @@ class MonopolyRegressionTests(unittest.TestCase):
         self.assertNotIn(house_action, self.env.get_allowed_actions(0))
 
         prop.houses = 4
+        sibling.houses = 4
         self.env.houses_available = 28
         self.env.step(hotel_action)
         self.assertEqual(prop.houses, 5)
@@ -260,6 +268,24 @@ class MonopolyRegressionTests(unittest.TestCase):
         self.assertEqual(prop.houses, 4)
         self.assertEqual(self.env.houses_available, 28)
         self.assertEqual(self.env.hotels_available, 12)
+
+    def test_even_building_across_color_group(self) -> None:
+        self.give_property(1, 0)
+        self.give_property(3, 0)
+        first_house = OFFSETS["improve_house"] + REAL_ESTATE_IDS.index(1)
+        sibling_house = OFFSETS["improve_house"] + REAL_ESTATE_IDS.index(3)
+        first_hotel = OFFSETS["improve_hotel"] + REAL_ESTATE_IDS.index(1)
+
+        self.env.step(first_house)
+
+        self.assertNotIn(first_house, self.env.get_allowed_actions(0))
+        self.assertIn(sibling_house, self.env.get_allowed_actions(0))
+        with self.assertRaisesRegex(ValueError, "Illegal action"):
+            self.env.step(first_house)
+
+        self.env.properties[1].houses = 4
+        self.env.properties[3].houses = 3
+        self.assertNotIn(first_hotel, self.env.get_allowed_actions(0))
 
     def test_trade_target_indices_survive_bankruptcy(self) -> None:
         self.env.players[1].bankrupt = True

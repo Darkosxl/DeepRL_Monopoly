@@ -10,7 +10,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 SLM_ROOT = ROOT / "SLM_HANDMADE_MONOPOLY"
-sys.path.insert(0, str(SLM_ROOT))
+sys.path[:0] = [str(SLM_ROOT), str(ROOT)]
 
 from monopoly_game_engine.actions import ACTION_SPACE_SIZE, OFFSETS, PROPERTY_IDS, ActionType  # noqa: E402
 from monopoly_game_engine.env import MonopolyEnv, TradeOffer  # noqa: E402
