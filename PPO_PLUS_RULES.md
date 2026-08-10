@@ -20,8 +20,9 @@ presented as traditional-rule Monopoly.
   jail, and doubles rolled in jail release the player without another roll.
 - Every declined or unaffordable unowned deed enters a cash auction. Bids use
   fixed +$1, +$10, +$50, and +$100 actions; passing withdraws a bidder.
-- A finite bank holds 32 houses and 12 hotels. Building, selling, and
-  bankruptcy return the corresponding pieces.
+- A finite bank holds 32 houses and 12 hotels. Buildings must be distributed
+  evenly across each color group; building, selling, and bankruptcy return the
+  corresponding pieces.
 - Unpaid rent creates an explicit player creditor. The debtor may liquidate;
   bankruptcy transfers remaining cash, deeds, mortgage state, and a jail card
   to that creditor. Bank debt returns deeds to the bank.
@@ -36,13 +37,13 @@ presented as traditional-rule Monopoly.
 
 - Chance and Community Chest spaces have no card effect. There is no shuffled
   card deck, so Get Out of Jail Free cards are not normally introduced.
-- Houses and hotels need a complete color group, but even building and even
-  selling across that group are not enforced. Building auctions are omitted.
+- Houses and hotels need a complete color group. Even selling across that
+  group is not enforced, and building auctions are omitted.
 - The simulator permits selling an undeveloped deed back to the bank at its
   mortgage value. Traditional Monopoly normally uses mortgages or player
   trades instead.
-- Mortgage and building checks are per deed rather than enforcing every
-  color-group restriction from the official rules.
+- Mortgage checks are per deed rather than enforcing every color-group
+  restriction from the official rules.
 - Trade actions use a bounded research action space: cash offers are 75%, 100%,
   or 125% of list price, or one deed is exchanged for one deed.
 - Income and luxury tax payments are limited to cash on hand and do not create
