@@ -273,6 +273,125 @@ def validate_collection_progress(path: Path) -> None:
         validate_collection_progress_data(json.load(handle))
 
 
+def sha256_file(path: Path) -> str:
+    with path.open("rb") as handle:
+        return hashlib.file_digest(handle, "sha256").hexdigest()
+
+
+def checkpoint_step(path: Path) -> int:
+    value = path.name.removeprefix("checkpoint-").removesuffix(".tar.gz")
+    if not value.isdigit():
+        raise GuardFailure(f"Invalid training checkpoint name: {path.name}")
+    return int(value)
+
+
+def validate_training_checkpoint(archive_path: Path) -> dict:
+    step = checkpoint_step(archive_path)
+    manifest_path = archive_path.with_name(f"checkpoint-{step}.json")
+    if not archive_path.is_file() or not manifest_path.is_file():
+        raise GuardFailure("Training checkpoint archive or manifest is missing")
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    fingerprint = manifest.get("fingerprint")
+    if (
+        manifest.get("step") != step
+        or manifest.get("archive") != archive_path.name
+        or not isinstance(fingerprint, str)
+        or len(fingerprint) != 64
+        or any(char not in "0123456789abcdef" for char in fingerprint)
+        or manifest.get("sha256") != sha256_file(archive_path)
+    ):
+        raise GuardFailure("Training checkpoint manifest/hash is invalid")
+    root = f"checkpoint-{step}"
+    required = {
+        f"{root}/adapter_config.json",
+        f"{root}/adapter_model.safetensors",
+        f"{root}/optimizer.pt",
+        f"{root}/rng_state.pth",
+        f"{root}/scheduler.pt",
+        f"{root}/tokenizer.json",
+        f"{root}/trainer_state.json",
+    }
+    with tarfile.open(archive_path, "r:gz") as archive:
+        members = archive.getmembers()
+        names = {member.name.rstrip("/") for member in members}
+        unsafe = [
+            member.name
+            for member in members
+            if (
+                (member.name != root and not member.name.startswith(f"{root}/"))
+                or member.issym()
+                or member.islnk()
+            )
+        ]
+        if unsafe or required - names:
+            raise GuardFailure("Training checkpoint archive contents are invalid")
+        state_file = archive.extractfile(f"{root}/trainer_state.json")
+        if state_file is None or json.load(state_file).get("global_step") != step:
+            raise GuardFailure("Training checkpoint global_step is invalid")
+    return manifest
+
+
+def latest_training_checkpoint(artifact_dir: Path) -> Path | None:
+    checkpoints = list(artifact_dir.glob("checkpoint-*.tar.gz"))
+    if not checkpoints:
+        return None
+    latest = max(checkpoints, key=checkpoint_step)
+    validate_training_checkpoint(latest)
+    return latest
+
+
+def restore_training_checkpoint(
+    session: str, temporary: Path, artifact_dir: Path
+) -> dict | None:
+    checkpoint = latest_training_checkpoint(artifact_dir)
+    if checkpoint is None:
+        return None
+    manifest = validate_training_checkpoint(checkpoint)
+    step = manifest["step"]
+    run_guarded(
+        [
+            "colab", "upload", "-s", session,
+            str(checkpoint), "/content/checkpoint_resume.tar.gz",
+        ],
+        timeout=20 * 60,
+    )
+    script = temporary / "restore_training_checkpoint.py"
+    script.write_text(
+        "from pathlib import Path\n"
+        "import hashlib, json, os, shutil, tarfile\n"
+        "archive_path = Path('/content/checkpoint_resume.tar.gz')\n"
+        f"expected_hash = {manifest['sha256']!r}\n"
+        "with archive_path.open('rb') as handle:\n"
+        "    actual_hash = hashlib.file_digest(handle, 'sha256').hexdigest()\n"
+        "if actual_hash != expected_hash:\n"
+        "    raise RuntimeError('Uploaded training checkpoint hash mismatch')\n"
+        f"checkpoint_dir = Path({REMOTE_RUN_ROOT!r}) / 'adapters/checkpoints'\n"
+        f"target = checkpoint_dir / 'checkpoint-{step}'\n"
+        "checkpoint_dir.mkdir(parents=True, exist_ok=True)\n"
+        "if target.exists():\n"
+        "    shutil.rmtree(target)\n"
+        "with tarfile.open(archive_path, 'r:gz') as archive:\n"
+        "    archive.extractall(checkpoint_dir, filter='data')\n"
+        "archive_path.unlink()\n"
+        "def atomic_json(path, value):\n"
+        "    pending = path.with_suffix(path.suffix + '.tmp')\n"
+        "    pending.write_text(json.dumps(value, sort_keys=True), encoding='utf-8')\n"
+        "    os.replace(pending, path)\n"
+        f"atomic_json(checkpoint_dir / 'checkpoint_fingerprint.json', "
+        f"{{'fingerprint': {manifest['fingerprint']!r}}})\n"
+        f"atomic_json(checkpoint_dir.parent / 'drive_sync_state.json', "
+        f"{{'uploaded_steps': [{step}]}})\n"
+        f"print('Restored verified training checkpoint {step}.')\n",
+        encoding="utf-8",
+    )
+    run_guarded(
+        ["colab", "exec", "-s", session, "-f", str(script), "--timeout", "3600"],
+        timeout=3700,
+        monitor_ram=False,
+    )
+    return manifest
+
+
 def compress_collection_progress(path: Path, destination: Path) -> None:
     if path.name == ".env" or not path.is_file():
         raise GuardFailure("Collection progress path is missing or unsafe")
@@ -324,9 +443,7 @@ def rclone_reference(binary: Path) -> tuple[str, str]:
     version = lines[0].removeprefix("rclone v")
     if not version or any(not part.isdigit() for part in version.split(".")):
         raise GuardFailure("rclone binary version is unsafe")
-    with binary.open("rb") as handle:
-        digest = hashlib.file_digest(handle, "sha256").hexdigest()
-    return version, digest
+    return version, sha256_file(binary)
 
 
 def parse_args() -> argparse.Namespace:
@@ -336,6 +453,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--collection-progress", type=Path)
     parser.add_argument("--drive-checkpoints", action="store_true")
     parser.add_argument("--hf-token-file", type=Path)
+    parser.add_argument("--checkpoint-eval-games", type=int)
     parser.add_argument("--rclone-config", type=Path)
     parser.add_argument("--rclone-binary", type=Path)
     parser.add_argument("--dry-run", action="store_true")
@@ -348,6 +466,11 @@ def main() -> int:
         raise SystemExit("--rclone-config and --rclone-binary must be supplied together")
     if args.drive_checkpoints and args.rclone_config:
         raise SystemExit("Choose DriveFS or rclone checkpoints, not both")
+    if args.checkpoint_eval_games is not None:
+        if args.stages != ["eval"]:
+            raise SystemExit("--checkpoint-eval-games requires --stages eval")
+        if not 1 <= args.checkpoint_eval_games <= 1000:
+            raise SystemExit("--checkpoint-eval-games must be between 1 and 1000")
     if shutil.which("colab") is None:
         raise SystemExit("Google Colab CLI is not installed")
     require_committed_pipeline()
@@ -427,6 +550,26 @@ def main() -> int:
                 timeout=20 * 60,
             )
             restore_snapshot(args.session, temporary, artifact_dir)
+            checkpoint_manifest = None
+            if "train" in args.stages or args.checkpoint_eval_games is not None:
+                checkpoint_manifest = restore_training_checkpoint(
+                    args.session, temporary, artifact_dir
+                )
+            if args.checkpoint_eval_games is not None:
+                if checkpoint_manifest is None:
+                    raise GuardFailure("Checkpoint evaluation requires a local checkpoint")
+                eval_config = temporary / "checkpoint_eval.json"
+                eval_config.write_text(json.dumps({
+                    "games": args.checkpoint_eval_games,
+                    "step": checkpoint_manifest["step"],
+                }), encoding="utf-8")
+                run_guarded(
+                    [
+                        "colab", "upload", "-s", args.session,
+                        str(eval_config), "/content/checkpoint_eval.json",
+                    ],
+                    timeout=5 * 60,
+                )
             if args.rclone_config is not None:
                 rclone_config, rclone_binary = validate_rclone_inputs(
                     args.rclone_config, args.rclone_binary

@@ -71,6 +71,10 @@ class Gemma4NotebookTests(unittest.TestCase):
             'offline["exact_rate"] >= 0.65',
             'game_metrics["gemma_win_rate"] >= 0.25',
             'game_metrics["asu_win_rate"] - 0.10',
+            '"mode": "direct_gemma_vs_asu"',
+            'ASUValueV1(asu_seat) if agent.player_id == asu_seat else agent',
+            'game_dir / f"game_{index:03d}.json"',
+            '"games_requested": game_count',
         )
         for value in required:
             self.assertIn(value, source)
@@ -122,6 +126,8 @@ class Gemma4NotebookTests(unittest.TestCase):
             'Hugging Face authentication ready.',
             'Google Drive rclone checkpoint sync started:',
             'Google Drive training artifacts verified uploaded.',
+            '"--checkpoint-eval-games"',
+            'restore_training_checkpoint(',
             '/ "gemma4_monopoly_colab" / RUN_NAME',
             'ROOT / "SLM_HANDMADE_MONOPOLY" / "monopoly_qlora.py"',
             'ROOT / "ASU_FROZEN_TEACHER" / "core.py"',
@@ -168,6 +174,45 @@ class Gemma4NotebookTests(unittest.TestCase):
             config.chmod(0o644)
             with self.assertRaisesRegex(runner.GuardFailure, "group or other"):
                 runner.validate_rclone_inputs(config, binary)
+
+    def test_launcher_validates_complete_training_checkpoint(self) -> None:
+        spec = importlib.util.spec_from_file_location("colab_runner_checkpoint", RUNNER)
+        runner = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(runner)
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            checkpoint = root / "checkpoint-128"
+            checkpoint.mkdir()
+            for name in (
+                "adapter_config.json",
+                "adapter_model.safetensors",
+                "optimizer.pt",
+                "rng_state.pth",
+                "scheduler.pt",
+                "tokenizer.json",
+            ):
+                (checkpoint / name).write_bytes(name.encode())
+            (checkpoint / "trainer_state.json").write_text(
+                json.dumps({"global_step": 128}), encoding="utf-8"
+            )
+            archive_path = root / "checkpoint-128.tar.gz"
+            import tarfile
+
+            with tarfile.open(archive_path, "w:gz") as archive:
+                archive.add(checkpoint, arcname=checkpoint.name)
+            manifest_path = root / "checkpoint-128.json"
+            manifest_path.write_text(json.dumps({
+                "archive": archive_path.name,
+                "fingerprint": "a" * 64,
+                "sha256": runner.sha256_file(archive_path),
+                "step": 128,
+            }), encoding="utf-8")
+            self.assertEqual(runner.latest_training_checkpoint(root), archive_path)
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            manifest["sha256"] = "0" * 64
+            manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+            with self.assertRaisesRegex(runner.GuardFailure, "manifest/hash"):
+                runner.validate_training_checkpoint(archive_path)
 
     def test_launcher_rejects_colab_notebooks_with_hidden_cell_errors(self) -> None:
         spec = importlib.util.spec_from_file_location("colab_runner", RUNNER)
