@@ -77,6 +77,12 @@ class Gemma4NotebookTests(unittest.TestCase):
         self.assertIn('userdata.get("HF_TOKEN")', source)
         self.assertIn('HF_TOKEN = get_token()', source)
         self.assertNotIn('os.getenv("HF_TOKEN")', source)
+        self.assertIn(
+            "from unsloth import FastModel, is_bfloat16_supported\n"
+            "    from datasets import Dataset\n"
+            "    from transformers import TrainerCallback, default_data_collator",
+            source,
+        )
         self.assertIn('RUN_ROOT = Path("/content/asu_pilot_v1")', source)
         self.assertNotIn('drive.mount(', source)
         self.assertNotIn('from monopoly_game_engine.agent_ppo import PPOAgent', source)
