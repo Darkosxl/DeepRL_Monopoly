@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import gzip
+import hashlib
 import json
 import os
 import shlex
@@ -313,6 +314,21 @@ def validate_rclone_inputs(config: Path, binary: Path) -> tuple[Path, Path]:
     return config, binary
 
 
+def rclone_reference(binary: Path) -> tuple[str, str]:
+    result = subprocess.run(
+        [str(binary), "version"], capture_output=True, text=True, check=True
+    )
+    lines = result.stdout.splitlines()
+    if not lines or not lines[0].startswith("rclone v"):
+        raise GuardFailure("rclone binary did not report a version")
+    version = lines[0].removeprefix("rclone v")
+    if not version or any(not part.isdigit() for part in version.split(".")):
+        raise GuardFailure("rclone binary version is unsafe")
+    with binary.open("rb") as handle:
+        digest = hashlib.file_digest(handle, "sha256").hexdigest()
+    return version, digest
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument("--session", default="gemma4-monopoly-asu-v1")
@@ -415,13 +431,7 @@ def main() -> int:
                 rclone_config, rclone_binary = validate_rclone_inputs(
                     args.rclone_config, args.rclone_binary
                 )
-                run_guarded(
-                    [
-                        "colab", "upload", "-s", args.session,
-                        str(rclone_binary), "/content/rclone",
-                    ],
-                    timeout=5 * 60,
-                )
+                rclone_version, rclone_hash = rclone_reference(rclone_binary)
                 run_guarded(
                     [
                         "colab", "upload", "-s", args.session,
@@ -438,7 +448,22 @@ def main() -> int:
                 )
                 start_sync = temporary / "start_drive_sync.py"
                 start_sync.write_text(
-                    "import json, os, subprocess, sys, time\n"
+                    "import hashlib, json, os, shutil, subprocess, sys, time, urllib.request, zipfile\n"
+                    "from pathlib import Path\n"
+                    f"version = {rclone_version!r}\n"
+                    f"expected_hash = {rclone_hash!r}\n"
+                    "archive = Path('/content/rclone.zip')\n"
+                    "url = f'https://downloads.rclone.org/v{version}/rclone-v{version}-linux-amd64.zip'\n"
+                    "with urllib.request.urlopen(url, timeout=180) as source, archive.open('wb') as target:\n"
+                    "    shutil.copyfileobj(source, target)\n"
+                    "temporary = Path('/content/rclone.tmp')\n"
+                    "member = f'rclone-v{version}-linux-amd64/rclone'\n"
+                    "with zipfile.ZipFile(archive) as bundle, bundle.open(member) as source, temporary.open('wb') as target:\n"
+                    "    shutil.copyfileobj(source, target)\n"
+                    "if hashlib.sha256(temporary.read_bytes()).hexdigest() != expected_hash:\n"
+                    "    raise RuntimeError('Downloaded rclone binary hash mismatch')\n"
+                    "os.replace(temporary, '/content/rclone')\n"
+                    "archive.unlink()\n"
                     "os.chmod('/content/rclone', 0o700)\n"
                     "os.chmod('/content/rclone.conf', 0o600)\n"
                     "result = subprocess.run([\n"
