@@ -14,6 +14,7 @@ from .core import (
     rent_projection,
     safety_breakdown,
 )
+from .core_v2 import ASURolloutV2, ASUValueV2
 from .spec import (
     ASU_ROLLOUT_V1,
     ASU_VALUE_V1,
@@ -22,6 +23,7 @@ from .spec import (
     FROZEN_SPEC_FINGERPRINT,
     FROZEN_SPEC_HASH,
 )
+from .spec_v2 import ASU_ROLLOUT_V2, ASU_VALUE_V2
 from .types import (
     CandidateScore,
     Decision,
@@ -34,9 +36,13 @@ from .types import (
 
 __all__ = [
     "ASURolloutV1",
+    "ASURolloutV2",
     "ASUValueV1",
+    "ASUValueV2",
     "ASU_ROLLOUT_V1",
+    "ASU_ROLLOUT_V2",
     "ASU_VALUE_V1",
+    "ASU_VALUE_V2",
     "CandidateScore",
     "Decision",
     "FROZEN_SPEC",

@@ -19,6 +19,7 @@ from .core import (
     _PrivateGame,
     preserve_global_rng,
 )
+from .core_v2 import ASURolloutV2, ASUValueV2
 from .spec import FROZEN_SPEC_HASH
 
 from monopoly_game_engine.actions import ACTION_SPACE_SIZE, ActionType  # noqa: E402
@@ -35,7 +36,7 @@ from monopoly_game_engine.state import STATE_DIM  # noqa: E402
 
 
 SUPPORTED_SCRIPTED = tuple(f"fixed-{letter}" for letter in "abcdef")
-SUPPORTED_ASU = ("asu-value-v1", "asu-rollout-v1")
+SUPPORTED_ASU = ("asu-value-v1", "asu-rollout-v1", "asu-value-v2", "asu-rollout-v2")
 CHECKPOINT_KINDS = ("ppo", "ddqn", "cfr")
 DEFAULT_MAX_DECISIONS = 20_000
 RESULTS_DISCLAIMER = (
@@ -290,6 +291,10 @@ class AgentFactory:
             return ASUValueV1(player_id)
         if spec.kind == "asu-rollout-v1":
             return ASURolloutV1(player_id)
+        if spec.kind == "asu-value-v2":
+            return ASUValueV2(player_id)
+        if spec.kind == "asu-rollout-v2":
+            return ASURolloutV2(player_id)
         if spec.kind in SUPPORTED_SCRIPTED:
             agent = FP_AGENT_CLASSES[ord(spec.kind[-1]) - ord("a")](player_id)
             return _ScriptedAdapter(agent, player_id)
